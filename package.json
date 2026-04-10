@@ -1,0 +1,46 @@
+{
+  "name": "@enterprise-os/collab-task-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "author": "Ray Qin",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qinjianxyz/collab-task-system.git"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "bun run test:unit && bun run test:integration",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run --maxWorkers=1 test/integration",
+    "test:e2e": "playwright test",
+    "db:up": "bun scripts/dev-stack.ts up",
+    "db:down": "bun scripts/dev-stack.ts down",
+    "db:reset": "bun run db:down && bun run db:up && bun run db:migrate",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun src/server/db/migrate.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "next": "^16.2.3",
+    "pg": "^8.20.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^25.6.0",
+    "@types/pg": "^8.15.6",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
+  }
+}
