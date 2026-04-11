@@ -39,6 +39,7 @@ export async function GET(
           connectedAt: Date.now(),
         }
       : null;
+  const presenceStore = viewer ? getPresenceStore() : null;
 
   let unsubscribe: () => void = () => undefined;
   let unsubscribePresence: () => void = () => undefined;
@@ -64,8 +65,8 @@ export async function GET(
         unsubscribePresence();
         unsubscribePresence = () => undefined;
 
-        if (viewer) {
-          getPresenceStore().scheduleRemoval(projectId, viewer.clientId);
+        if (viewer && presenceStore) {
+          presenceStore.scheduleRemoval(projectId, viewer.clientId);
         }
 
         try {
@@ -87,26 +88,29 @@ export async function GET(
         }
       };
 
-      enqueue("version", { version });
+      const initialize = async () => {
+        enqueue("version", { version });
 
-      unsubscribe = subscribeToProjectEvents(projectId, (event) => {
-        enqueue("project-event", { event });
-      });
-
-      if (viewer) {
-        const presenceStore = getPresenceStore();
-        presenceStore.upsertViewer(projectId, viewer);
-        enqueue("presence", {
-          viewers: presenceStore.getViewers(projectId),
+        unsubscribe = subscribeToProjectEvents(projectId, (event) => {
+          enqueue("project-event", { event });
         });
-        unsubscribePresence = presenceStore.subscribe(projectId, (viewers) => {
-          enqueue("presence", { viewers });
-        });
-      }
 
-      heartbeat = setInterval(() => {
-        enqueue("heartbeat", { ts: Date.now() });
-      }, 15_000);
+        if (viewer && presenceStore) {
+          await presenceStore.upsertViewer(projectId, viewer);
+          enqueue("presence", {
+            viewers: await presenceStore.getViewers(projectId),
+          });
+          unsubscribePresence = presenceStore.subscribe(projectId, (viewers) => {
+            enqueue("presence", { viewers });
+          });
+        }
+
+        heartbeat = setInterval(() => {
+          enqueue("heartbeat", { ts: Date.now() });
+        }, 15_000);
+      };
+
+      void initialize();
 
       request.signal.addEventListener(
         "abort",
@@ -129,8 +133,8 @@ export async function GET(
       unsubscribePresence();
       unsubscribePresence = () => undefined;
 
-      if (viewer) {
-        getPresenceStore().scheduleRemoval(projectId, viewer.clientId);
+      if (viewer && presenceStore) {
+        presenceStore.scheduleRemoval(projectId, viewer.clientId);
       }
     },
   });
