@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import type { Comment, Task, TaskStatus } from "../../shared/types";
 import { getOrCreateClientId, getStoredDisplayName, setStoredDisplayName } from "../identity";
@@ -46,8 +46,13 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
   const [taskDependencies, setTaskDependencies] = useState<string[]>([]);
   const [dependencyQuery, setDependencyQuery] = useState("");
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editingCommentDraft, setEditingCommentDraft] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const taskInputRef = useRef<HTMLInputElement | null>(null);
+  const shortcutCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const shortcutTitleId = useId();
 
   useEffect(() => {
     setClientId(getOrCreateClientId());
@@ -140,6 +145,19 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
     };
   }, [sync.redo, sync.undo]);
 
+  useEffect(() => {
+    if (!showShortcuts) {
+      previousFocusRef.current?.focus();
+      previousFocusRef.current = null;
+      return;
+    }
+
+    previousFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    shortcutCloseButtonRef.current?.focus();
+  }, [showShortcuts]);
+
   async function handleTaskSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
 
@@ -214,6 +232,57 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
     }
   }
 
+  async function handleTaskDelete(taskId: string): Promise<void> {
+    try {
+      await sync.dispatch({
+        entityId: taskId,
+        action: {
+          type: "task.delete",
+          data: {},
+        },
+      });
+    } catch {
+      // error is surfaced by the hook state
+    }
+  }
+
+  async function handleCommentDelete(commentId: string): Promise<void> {
+    try {
+      await sync.dispatch({
+        entityId: commentId,
+        action: {
+          type: "comment.delete",
+          data: {},
+        },
+      });
+    } catch {
+      // error is surfaced by the hook state
+    }
+  }
+
+  async function handleCommentUpdate(commentId: string): Promise<void> {
+    const content = editingCommentDraft.trim();
+    if (!content) {
+      return;
+    }
+
+    try {
+      await sync.dispatch({
+        entityId: commentId,
+        action: {
+          type: "comment.update",
+          data: {
+            content,
+          },
+        },
+      });
+      setEditingCommentId(null);
+      setEditingCommentDraft("");
+    } catch {
+      // error is surfaced by the hook state
+    }
+  }
+
   return (
     <main className="workspace-shell">
       <header className="workspace-header">
@@ -228,15 +297,22 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
 
           <div className="presence-summary">
             <span className="subtle-copy">Viewing now</span>
-            <div className="viewer-list">
+            <div
+              aria-label="Who is viewing this project"
+              aria-live="polite"
+              className="viewer-list"
+              role="list"
+            >
               {sync.viewers.length > 0 ? (
                 sync.viewers.map((viewer) => (
-                  <span className="viewer-chip" key={viewer.clientId}>
+                  <span className="viewer-chip" key={viewer.clientId} role="listitem">
                     {viewer.userId}
                   </span>
                 ))
               ) : (
-                <span className="subtle-copy">Waiting for viewers...</span>
+                <span className="subtle-copy" role="listitem">
+                  Waiting for viewers...
+                </span>
               )}
             </div>
           </div>
@@ -254,7 +330,11 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
             />
           </label>
 
-          <div className={`status-pill status-${sync.connectionStatus}`}>
+          <div
+            aria-live="polite"
+            className={`status-pill status-${sync.connectionStatus}`}
+            role="status"
+          >
             {sync.connectionStatus}
           </div>
 
@@ -397,23 +477,102 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
                         ) : null}
                       </div>
 
-                      <button
-                        className="status-button"
-                        disabled={!canMutate}
-                        onClick={() => {
-                          void handleStatusAdvance(task);
-                        }}
-                        type="button"
-                      >
-                        {task.status}
-                      </button>
+                      <div className="task-card-actions">
+                        <button
+                          className="status-button"
+                          disabled={!canMutate}
+                          onClick={() => {
+                            void handleStatusAdvance(task);
+                          }}
+                          type="button"
+                        >
+                          {task.status}
+                        </button>
+
+                        <button
+                          aria-label="Delete task"
+                          className="ghost-button destructive-button"
+                          disabled={!canMutate}
+                          onClick={() => {
+                            void handleTaskDelete(task.id);
+                          }}
+                          type="button"
+                        >
+                          Delete task
+                        </button>
+                      </div>
                     </div>
 
                     <div className="comment-list">
                       {(commentsByTask.get(task.id) ?? []).map((comment: Comment) => (
                         <div className="comment-item" key={comment.id}>
-                          <strong>{comment.author}</strong>
-                          <p>{comment.content}</p>
+                          <div className="comment-item-header">
+                            <strong>{comment.author}</strong>
+                            <div className="comment-item-actions">
+                              <button
+                                aria-label="Edit comment"
+                                className="ghost-button"
+                                disabled={!canMutate}
+                                onClick={() => {
+                                  setEditingCommentId(comment.id);
+                                  setEditingCommentDraft(comment.content);
+                                }}
+                                type="button"
+                              >
+                                Edit comment
+                              </button>
+
+                              <button
+                                aria-label="Delete comment"
+                                className="ghost-button destructive-button"
+                                disabled={!canMutate}
+                                onClick={() => {
+                                  void handleCommentDelete(comment.id);
+                                }}
+                                type="button"
+                              >
+                                Delete comment
+                              </button>
+                            </div>
+                          </div>
+
+                          {editingCommentId === comment.id ? (
+                            <div className="comment-edit-form">
+                              <input
+                                aria-label="Edit comment text"
+                                className="text-input"
+                                disabled={!canMutate}
+                                onChange={(event) => setEditingCommentDraft(event.target.value)}
+                                value={editingCommentDraft}
+                              />
+
+                              <div className="comment-item-actions">
+                                <button
+                                  className="secondary-button"
+                                  disabled={!canMutate}
+                                  onClick={() => {
+                                    void handleCommentUpdate(comment.id);
+                                  }}
+                                  type="button"
+                                >
+                                  Save comment
+                                </button>
+
+                                <button
+                                  className="ghost-button"
+                                  onClick={() => {
+                                    setEditingCommentId(null);
+                                    setEditingCommentDraft("");
+                                  }}
+                                  type="button"
+                                >
+                                  Cancel edit
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <p>{comment.content}</p>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -459,16 +618,23 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
             </p>
           </div>
 
-          <div className="activity-list">
+          <div
+            aria-label="Activity feed"
+            aria-live="polite"
+            className="activity-list"
+            role="list"
+          >
             {sync.activity.length > 0 ? (
               sync.activity.map((item) => (
-                <div className="activity-item" key={item.id}>
+                <div className="activity-item" key={item.id} role="listitem">
                   <strong>{item.actor}</strong>
                   <p>{item.summary}</p>
                 </div>
               ))
             ) : (
-              <p className="subtle-copy">No events yet. Create a task to start the feed.</p>
+              <p className="subtle-copy" role="listitem">
+                No events yet. Create a task to start the feed.
+              </p>
             )}
           </div>
         </aside>
@@ -482,12 +648,14 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
           role="presentation"
         >
           <section
+            aria-labelledby={shortcutTitleId}
+            aria-modal="true"
             className="shortcut-card"
             onClick={(event) => event.stopPropagation()}
             role="dialog"
           >
             <p className="eyebrow">Keyboard shortcuts</p>
-            <h2>Keyboard shortcuts</h2>
+            <h2 id={shortcutTitleId}>Keyboard shortcuts</h2>
             <div className="shortcut-list">
               <p>
                 <strong>Ctrl+Z / Cmd+Z</strong>
@@ -510,6 +678,7 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
             <button
               className="secondary-button"
               onClick={() => setShowShortcuts(false)}
+              ref={shortcutCloseButtonRef}
               type="button"
             >
               Close

@@ -171,8 +171,10 @@ export function VirtualTaskList<T>({
     <div className={className}>
       <div
         aria-label={viewportLabel}
+        aria-busy={isLoadingMore ? "true" : "false"}
         className={`task-list-viewport${usesWindowing ? " is-windowed" : ""}`}
         ref={viewportRef}
+        role="list"
       >
         <div className="task-list-window">
           {topPadding > 0 ? (
@@ -184,7 +186,9 @@ export function VirtualTaskList<T>({
           ) : null}
 
           {visibleItems.map((item) => (
-            <div key={getKey(item)}>{renderItem(item)}</div>
+            <div key={getKey(item)} role="listitem">
+              {renderItem(item)}
+            </div>
           ))}
 
           {bottomPadding > 0 ? (

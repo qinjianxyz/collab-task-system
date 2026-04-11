@@ -184,7 +184,7 @@ export async function appendEvent(input: AppendEventInput): Promise<ProjectEvent
       );
     }
 
-    await validateTaskEvent(client, parsed);
+    await validateDomainEvent(client, parsed);
 
     const event = toStoredEvent(parsed, currentVersion + 1);
 
@@ -260,14 +260,36 @@ type TaskStateRow = {
   dependencies: string[] | null;
 };
 
+type ExistingCommentRow = {
+  id: string;
+};
+
+async function validateDomainEvent(
+  client: PoolClient,
+  input: AppendEventInput,
+): Promise<void> {
+  if (
+    input.action.type === "task.create" ||
+    input.action.type === "task.update" ||
+    input.action.type === "task.delete"
+  ) {
+    await validateTaskEvent(client, input);
+    return;
+  }
+
+  if (
+    input.action.type === "comment.create" ||
+    input.action.type === "comment.update" ||
+    input.action.type === "comment.delete"
+  ) {
+    await validateCommentEvent(client, input);
+  }
+}
+
 async function validateTaskEvent(
   client: PoolClient,
   input: AppendEventInput,
 ): Promise<void> {
-  if (input.action.type !== "task.create" && input.action.type !== "task.update") {
-    return;
-  }
-
   const taskRows = await client.query<TaskStateRow>(
     `select id, title, status, dependencies
        from tasks
@@ -285,6 +307,28 @@ async function validateTaskEvent(
       },
     ]),
   );
+
+  if (input.action.type === "task.delete") {
+    const currentTask = tasksById.get(input.entityId);
+    if (!currentTask) {
+      throw new DomainError("task no longer exists");
+    }
+
+    const dependentTask = taskRows.rows.find(
+      (row) => row.id !== input.entityId && (row.dependencies ?? []).includes(input.entityId),
+    );
+    if (dependentTask) {
+      throw new DomainError(
+        `Task "${currentTask.title}" cannot be deleted while "${dependentTask.title}" depends on it.`,
+      );
+    }
+
+    return;
+  }
+
+  if (input.action.type !== "task.create" && input.action.type !== "task.update") {
+    return;
+  }
 
   const dependencyGraph = Object.fromEntries(
     taskRows.rows.map((row) => [row.id, row.dependencies ?? []]),
@@ -335,4 +379,44 @@ async function validateTaskEvent(
   });
 
   assertTaskStatusTransitionAllowed(nextStatus, dependencyStates);
+}
+
+async function validateCommentEvent(
+  client: PoolClient,
+  input: AppendEventInput,
+): Promise<void> {
+  if (input.action.type === "comment.create") {
+    const taskResult = await client.query<{ id: string }>(
+      `select id
+         from tasks
+        where project_id = $1
+          and id = $2`,
+      [input.projectId, input.action.data.taskId],
+    );
+
+    if ((taskResult.rowCount ?? 0) === 0) {
+      throw new DomainError(`task ${input.action.data.taskId} does not exist`);
+    }
+
+    return;
+  }
+
+  const commentResult = await client.query<ExistingCommentRow>(
+    `select comments.id
+       from comments
+       join tasks on tasks.id = comments.task_id
+      where tasks.project_id = $1
+        and comments.id = $2`,
+    [input.projectId, input.entityId],
+  );
+
+  if ((commentResult.rowCount ?? 0) > 0) {
+    return;
+  }
+
+  if (input.action.type === "comment.update") {
+    throw new DomainError("comment was deleted before your edit could be saved");
+  }
+
+  throw new DomainError("comment no longer exists");
 }

@@ -196,6 +196,155 @@ describe("project API routes", () => {
     });
   });
 
+  it("rejects a stale comment edit retry after another client deletes the comment", async () => {
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { GET: getSnapshot } = await import(
+      "../../app/api/projects/[projectId]/snapshot/route"
+    );
+    const { POST: appendProjectEvent } = await import(
+      "../../app/api/projects/[projectId]/events/route"
+    );
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Comment Race",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+    const { projectId } = await createResponse.json();
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_comment_race",
+        entityId: "task_comment_race",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_000,
+        expectedVersion: 1,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Comment target",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_comment_create_race",
+        entityId: "comment_race",
+        clientId: "client_beta",
+        userId: "bob",
+        timestamp: 1_716_000_000_100,
+        expectedVersion: 2,
+        action: {
+          type: "comment.create",
+          data: {
+            taskId: "task_comment_race",
+            content: "Draft comment",
+            author: "bob",
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_comment_delete_race",
+        entityId: "comment_race",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_200,
+        expectedVersion: 3,
+        action: {
+          type: "comment.delete",
+          data: {},
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    const staleUpdate = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_comment_update_stale",
+        entityId: "comment_race",
+        clientId: "client_beta",
+        userId: "bob",
+        timestamp: 1_716_000_000_300,
+        expectedVersion: 3,
+        action: {
+          type: "comment.update",
+          data: {
+            content: "Edited comment",
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(staleUpdate.status).toBe(409);
+
+    const snapshotResponse = await getSnapshot(
+      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot`),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+    const snapshotPayload = await snapshotResponse.json();
+
+    const retryUpdate = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_comment_update_retry",
+        entityId: "comment_race",
+        clientId: "client_beta",
+        userId: "bob",
+        timestamp: 1_716_000_000_400,
+        expectedVersion: snapshotPayload.snapshot.version,
+        action: {
+          type: "comment.update",
+          data: {
+            content: "Edited comment",
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(retryUpdate.status).toBe(422);
+    expect(await retryUpdate.json()).toMatchObject({
+      error: {
+        code: "domain_error",
+      },
+    });
+
+    const finalSnapshotResponse = await getSnapshot(
+      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot`),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+    const finalSnapshotPayload = await finalSnapshotResponse.json();
+
+    expect(finalSnapshotPayload.snapshot.version).toBe(4);
+    expect(finalSnapshotPayload.snapshot.comments).toHaveLength(0);
+  });
+
   it("rejects presence.update through the append API because presence is ephemeral", async () => {
     const { POST: createProject } = await import("../../app/api/projects/route");
     const { POST: appendProjectEvent } = await import(
@@ -322,6 +471,106 @@ describe("project API routes", () => {
         message: 'Blocked: dependency "Fix auth" must be completed first.',
       },
     });
+  });
+
+  it("rejects deleting a task that other tasks still depend on", async () => {
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { GET: getSnapshot } = await import(
+      "../../app/api/projects/[projectId]/snapshot/route"
+    );
+    const { POST: appendProjectEvent } = await import(
+      "../../app/api/projects/[projectId]/events/route"
+    );
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Dependency Delete Guard",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+    const { projectId } = await createResponse.json();
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_fix_auth",
+        entityId: "task_fix_auth",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_000,
+        expectedVersion: 1,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Fix auth",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_ship_dashboard",
+        entityId: "task_ship_dashboard",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_100,
+        expectedVersion: 2,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Ship dashboard",
+            status: "todo",
+            projectId,
+            dependencies: ["task_fix_auth"],
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    const deleteResponse = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_fix_auth_delete",
+        entityId: "task_fix_auth",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_200,
+        expectedVersion: 3,
+        action: {
+          type: "task.delete",
+          data: {},
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(deleteResponse.status).toBe(422);
+    expect(await deleteResponse.json()).toMatchObject({
+      error: {
+        code: "domain_error",
+      },
+    });
+
+    const snapshotResponse = await getSnapshot(
+      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot`),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+    const snapshotPayload = await snapshotResponse.json();
+
+    expect(snapshotPayload.snapshot.version).toBe(3);
+    expect(snapshotPayload.snapshot.tasks).toHaveLength(2);
   });
 
   it("returns a bounded snapshot page and fetches the next task window by cursor", async () => {
