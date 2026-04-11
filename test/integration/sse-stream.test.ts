@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { closeDatabasePool } from "../../src/server/db/client";
 import { resetDatabase, waitForDatabase } from "../../src/server/db/testing";
+import type { ProjectEvent } from "../../src/shared/types";
 
 const BASE_URL = "http://localhost:3000";
 
@@ -186,4 +187,64 @@ describe("project SSE stream", () => {
     },
     10_000,
   );
+});
+
+describe("project event bus", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.unstubAllEnvs();
+  });
+
+  it("defaults to an in-memory bus when REDIS_URL is unset", async () => {
+    const { createProjectEventBus, InMemoryProjectEventBus } = await import(
+      "../../src/server/realtime/event-bus"
+    );
+
+    const bus = createProjectEventBus();
+
+    expect(bus).toBeInstanceOf(InMemoryProjectEventBus);
+
+    const received: ProjectEvent[] = [];
+    const unsubscribe = bus.subscribe("project_123", (event) => {
+      received.push(event);
+    });
+
+    bus.publish({
+      id: "evt_bus_publish",
+      projectId: "project_123",
+      entityId: "task_123",
+      action: {
+        type: "task.create",
+        data: {
+          projectId: "project_123",
+          status: "todo",
+          title: "Bus test",
+        },
+      },
+      clientId: "client_alpha",
+      userId: "alice",
+      timestamp: 1_716_000_000_000,
+      version: 1,
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      id: "evt_bus_publish",
+      projectId: "project_123",
+    });
+
+    unsubscribe();
+  });
+
+  it("selects the Redis bus when REDIS_URL is configured", async () => {
+    vi.stubEnv("REDIS_URL", "redis://localhost:6379");
+
+    const { createProjectEventBus, RedisProjectEventBus } = await import(
+      "../../src/server/realtime/event-bus"
+    );
+
+    const bus = createProjectEventBus();
+
+    expect(bus).toBeInstanceOf(RedisProjectEventBus);
+  });
 });
