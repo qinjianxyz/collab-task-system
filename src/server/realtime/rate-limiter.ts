@@ -111,6 +111,30 @@ export class RedisWriteRateLimiter implements WriteRateLimiter {
   }
 }
 
+export class ResilientRedisWriteRateLimiter extends RedisWriteRateLimiter {
+  private failedOpen = false;
+
+  private readonly fallback: InMemoryWriteRateLimiter;
+
+  constructor(private readonly resilientConfig: RateLimitConfig) {
+    super(resilientConfig);
+    this.fallback = new InMemoryWriteRateLimiter(resilientConfig);
+  }
+
+  async check(key: string): Promise<RateLimitDecision> {
+    if (this.failedOpen) {
+      return this.fallback.check(key);
+    }
+
+    try {
+      return await super.check(key);
+    } catch {
+      this.failedOpen = true;
+      return this.fallback.check(key);
+    }
+  }
+}
+
 const RATE_LIMIT_LIMIT = 120;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
@@ -153,7 +177,7 @@ export function createWriteRateLimiter(
   };
 
   if (config.redisUrl) {
-    return new RedisWriteRateLimiter(config);
+    return new ResilientRedisWriteRateLimiter(config);
   }
 
   return new InMemoryWriteRateLimiter(config);

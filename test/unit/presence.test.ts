@@ -93,4 +93,30 @@ describe("presence store", () => {
 
     expect(presenceStore).toBeInstanceOf(RedisPresenceStore);
   });
+
+  it("fails open to the in-memory store when the redis store errors", async () => {
+    vi.stubEnv("REDIS_URL", "redis://localhost:6379");
+
+    const upsertSpy = vi
+      .spyOn(RedisPresenceStore.prototype, "upsertViewer")
+      .mockRejectedValue(new Error("redis unavailable"));
+
+    const presenceStore = createPresenceStore();
+
+    await presenceStore.upsertViewer("project_1", {
+      clientId: "client_a",
+      userId: "alice",
+      location: "project",
+      connectedAt: 1_716_000_000_000,
+    });
+
+    await expect(presenceStore.getViewers("project_1")).resolves.toEqual([
+      expect.objectContaining({
+        clientId: "client_a",
+        userId: "alice",
+      }),
+    ]);
+
+    upsertSpy.mockRestore();
+  });
 });

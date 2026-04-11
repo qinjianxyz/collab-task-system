@@ -32,6 +32,27 @@ describe("project API routes", () => {
     await closeDatabasePool();
   });
 
+  it("reports application health including database and redis reachability", async () => {
+    vi.stubEnv("REDIS_URL", "redis://127.0.0.1:6379");
+
+    const { GET: getHealth } = await import("../../app/api/health/route");
+
+    const response = await getHealth();
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "ok",
+      services: {
+        database: {
+          status: "ok",
+        },
+        redis: {
+          status: "ok",
+        },
+      },
+    });
+  });
+
   it("creates a project and returns its first snapshot through the API", async () => {
     const { POST: createProject } = await import("../../app/api/projects/route");
     const { GET: getSnapshot } = await import(

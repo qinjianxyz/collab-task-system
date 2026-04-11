@@ -40,4 +40,28 @@ describe("write rate limiter", () => {
 
     expect(limiter).toBeInstanceOf(RedisWriteRateLimiter);
   });
+
+  it("fails open to the in-memory limiter when the redis limiter errors", async () => {
+    vi.stubEnv("REDIS_URL", "redis://localhost:6379");
+
+    const rateLimiterModule = await import(
+      "../../src/server/realtime/rate-limiter"
+    );
+    const checkSpy = vi
+      .spyOn(rateLimiterModule.RedisWriteRateLimiter.prototype, "check")
+      .mockRejectedValue(new Error("redis unavailable"));
+
+    const limiter = rateLimiterModule.createWriteRateLimiter({
+      limit: 1,
+      windowMs: 1_000,
+    });
+
+    const first = await limiter.check("project:create:client_alpha");
+    const second = await limiter.check("project:create:client_alpha");
+
+    expect(first.allowed).toBe(true);
+    expect(second.allowed).toBe(false);
+
+    checkSpy.mockRestore();
+  });
 });

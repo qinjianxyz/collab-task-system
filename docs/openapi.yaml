@@ -1,0 +1,646 @@
+openapi: 3.1.0
+info:
+  title: Collab Task System API
+  version: 0.1.0
+  description: >
+    Event-sourced collaborative task management API with paged snapshots,
+    optimistic concurrency, SSE fanout, and health reporting.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+security: []
+servers:
+  - url: /
+    description: Current deployment origin
+tags:
+  - name: health
+    description: Runtime readiness and dependency health.
+  - name: projects
+    description: Project creation and top-level project metadata.
+  - name: sync
+    description: Snapshot, incremental sync, and live stream endpoints.
+paths:
+  /api/health:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Report app dependency health
+      responses:
+        "200":
+          description: App and required dependencies are healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: One or more critical dependencies are unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "400":
+          $ref: "#/components/responses/ApiError"
+  /api/projects:
+    post:
+      tags: [projects]
+      operationId: createProject
+      summary: Create a project by appending a project.create event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectRequest"
+      responses:
+        "201":
+          description: Project created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateProjectResponse"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/RateLimitedError"
+        "422":
+          $ref: "#/components/responses/ApiError"
+  /api/projects/{projectId}/snapshot:
+    get:
+      tags: [sync]
+      operationId: getProjectSnapshot
+      summary: Get the current project snapshot and first task page
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - name: taskLimit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 250
+            default: 100
+      responses:
+        "200":
+          description: Snapshot loaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadedProjectSnapshotResponse"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+  /api/projects/{projectId}/tasks:
+    get:
+      tags: [sync]
+      operationId: listProjectTasks
+      summary: Fetch the next task page
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 250
+            default: 100
+      responses:
+        "200":
+          description: Task page loaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectTaskPageResponse"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+  /api/projects/{projectId}/events:
+    get:
+      tags: [sync]
+      operationId: getProjectEventsSince
+      summary: Fetch events after a known version
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - name: since
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: Ordered events since the requested version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectEventsResponse"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+    post:
+      tags: [sync]
+      operationId: appendProjectEvent
+      summary: Append an event to a project stream
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppendProjectEventRequest"
+      responses:
+        "201":
+          description: Event committed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppendProjectEventResponse"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "409":
+          $ref: "#/components/responses/ApiError"
+        "422":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/RateLimitedError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+  /api/projects/{projectId}/stream:
+    get:
+      tags: [sync]
+      operationId: streamProjectEvents
+      summary: Open the SSE stream for live project updates
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - name: clientId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: userId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: location
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSE stream opened
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                version:
+                  summary: Version event
+                  value: |
+                    event: version
+                    data: {"version":42}
+                project-event:
+                  summary: Project event
+                  value: |
+                    event: project-event
+                    data: {"event":{"id":"evt_1","projectId":"project_1","version":43}}
+                presence:
+                  summary: Presence snapshot
+                  value: |
+                    event: presence
+                    data: {"viewers":[{"clientId":"client_a","userId":"alice","location":"project","connectedAt":1716000000000}]}
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+components:
+  parameters:
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    ApiError:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiErrorResponse"
+    RateLimitedError:
+      description: Write rate limited
+      headers:
+        Retry-After:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiErrorResponse"
+  schemas:
+    HealthService:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, skipped, error]
+        message:
+          type: string
+    HealthResponse:
+      type: object
+      required: [checkedAt, services, status]
+      properties:
+        checkedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [ok, degraded]
+        services:
+          type: object
+          required: [database, redis]
+          properties:
+            database:
+              $ref: "#/components/schemas/HealthService"
+            redis:
+              $ref: "#/components/schemas/HealthService"
+    ApiErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+    CreateProjectRequest:
+      type: object
+      required: [name, clientId, userId]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        clientId:
+          type: string
+        userId:
+          type: string
+    CreateProjectResponse:
+      type: object
+      required: [projectId, event]
+      properties:
+        projectId:
+          type: string
+        event:
+          $ref: "#/components/schemas/ProjectEvent"
+    Project:
+      type: object
+      required: [id, name, metadata, currentVersion, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        currentVersion:
+          type: integer
+        createdAt:
+          type: integer
+        updatedAt:
+          type: integer
+    TaskConfig:
+      type: object
+      properties:
+        priority:
+          type: string
+          enum: [low, medium, high, urgent]
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        customFields:
+          type: object
+          additionalProperties: true
+    Task:
+      type: object
+      required: [id, projectId, title, status, assignedTo, configuration, dependencies, position, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+          enum: [todo, in_progress, done, blocked, canceled]
+        assignedTo:
+          type: array
+          items:
+            type: string
+        configuration:
+          $ref: "#/components/schemas/TaskConfig"
+        dependencies:
+          type: array
+          items:
+            type: string
+        position:
+          type: number
+        createdAt:
+          type: integer
+        updatedAt:
+          type: integer
+    Comment:
+      type: object
+      required: [id, taskId, content, author, mentions, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        content:
+          type: string
+        author:
+          type: string
+        mentions:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: integer
+        updatedAt:
+          type: integer
+    ProjectTaskPage:
+      type: object
+      required: [tasks, comments, nextCursor, hasMore, totalCount]
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+        comments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Comment"
+        nextCursor:
+          type:
+            - string
+            - "null"
+        hasMore:
+          type: boolean
+        totalCount:
+          type: integer
+    LoadedProjectSnapshotResponse:
+      type: object
+      required: [snapshot]
+      properties:
+        snapshot:
+          type: object
+          required: [project, tasks, comments, version, taskPage]
+          properties:
+            project:
+              $ref: "#/components/schemas/Project"
+            tasks:
+              type: array
+              items:
+                $ref: "#/components/schemas/Task"
+            comments:
+              type: array
+              items:
+                $ref: "#/components/schemas/Comment"
+            version:
+              type: integer
+            taskPage:
+              $ref: "#/components/schemas/ProjectTaskPage"
+    ProjectTaskPageResponse:
+      type: object
+      required: [page]
+      properties:
+        page:
+          $ref: "#/components/schemas/ProjectTaskPage"
+    ProjectEventsResponse:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectEvent"
+    AppendProjectEventRequest:
+      type: object
+      required: [id, entityId, action, clientId, userId, timestamp, expectedVersion]
+      properties:
+        id:
+          type: string
+        entityId:
+          type: string
+        action:
+          $ref: "#/components/schemas/EventAction"
+        clientId:
+          type: string
+        userId:
+          type: string
+        timestamp:
+          type: integer
+        expectedVersion:
+          type: integer
+        parentVersion:
+          type: integer
+    AppendProjectEventResponse:
+      type: object
+      required: [event]
+      properties:
+        event:
+          $ref: "#/components/schemas/ProjectEvent"
+    ProjectEvent:
+      type: object
+      required: [id, projectId, entityId, action, version, clientId, userId, timestamp]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        entityId:
+          type: string
+        action:
+          $ref: "#/components/schemas/EventAction"
+        version:
+          type: integer
+        clientId:
+          type: string
+        userId:
+          type: string
+        timestamp:
+          type: integer
+        parentVersion:
+          type: integer
+    EventAction:
+      oneOf:
+        - $ref: "#/components/schemas/ProjectCreateAction"
+        - $ref: "#/components/schemas/ProjectUpdateAction"
+        - $ref: "#/components/schemas/TaskCreateAction"
+        - $ref: "#/components/schemas/TaskUpdateAction"
+        - $ref: "#/components/schemas/TaskDeleteAction"
+        - $ref: "#/components/schemas/CommentCreateAction"
+        - $ref: "#/components/schemas/CommentUpdateAction"
+        - $ref: "#/components/schemas/CommentDeleteAction"
+      discriminator:
+        propertyName: type
+    ProjectCreateAction:
+      type: object
+      required: [type, data]
+      properties:
+        type:
+          const: project.create
+        data:
+          type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            metadata:
+              type: object
+              additionalProperties: true
+    ProjectUpdateAction:
+      type: object
+      required: [type, data]
+      properties:
+        type:
+          const: project.update
+        data:
+          type: object
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            metadata:
+              type: object
+              additionalProperties: true
+    TaskCreateAction:
+      type: object
+      required: [type, data]
+      properties:
+        type:
+          const: task.create
+        data:
+          type: object
+          required: [title, status, projectId]
+          properties:
+            title:
+              type: string
+            status:
+              type: string
+              enum: [todo, in_progress, done, blocked, canceled]
+            projectId:
+              type: string
+            assignedTo:
+              type: array
+              items:
+                type: string
+            configuration:
+              $ref: "#/components/schemas/TaskConfig"
+            dependencies:
+              type: array
+              items:
+                type: string
+            position:
+              type: number
+    TaskUpdateAction:
+      type: object
+      required: [type, data]
+      properties:
+        type:
+          const: task.update
+        data:
+          type: object
+          properties:
+            title:
+              type: string
+            status:
+              type: string
+              enum: [todo, in_progress, done, blocked, canceled]
+            assignedTo:
+              type: array
+              items:
+                type: string
+            configuration:
+              $ref: "#/components/schemas/TaskConfig"
+            dependencies:
+              type: array
+              items:
+                type: string
+            position:
+              type: number
+    TaskDeleteAction:
+      type: object
+      required: [type, data]
+      properties:
+        type:
+          const: task.delete
+        data:
+          type: object
+          additionalProperties: false
+    CommentCreateAction:
+      type: object
+      required: [type, data]
+      properties:
+        type:
+          const: comment.create
+        data:
+          type: object
+          required: [taskId, content, author]
+          properties:
+            taskId:
+              type: string
+            content:
+              type: string
+            author:
+              type: string
+    CommentUpdateAction:
+      type: object
+      required: [type, data]
+      properties:
+        type:
+          const: comment.update
+        data:
+          type: object
+          required: [content]
+          properties:
+            content:
+              type: string
+    CommentDeleteAction:
+      type: object
+      required: [type, data]
+      properties:
+        type:
+          const: comment.delete
+        data:
+          type: object
+          additionalProperties: false

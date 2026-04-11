@@ -13,6 +13,8 @@ type EventBusOptions = {
   redisUrl?: string;
 };
 
+const RECENT_LOCAL_EVENT_TTL_MS = 15_000;
+
 const PROJECT_EVENT_BUS_KEY = Symbol.for(
   "collab-task-system.project-event-bus",
 );
@@ -21,13 +23,78 @@ type GlobalWithProjectEventBus = typeof globalThis & {
   [PROJECT_EVENT_BUS_KEY]?: ProjectEventBus;
 };
 
+export class ResilientRedisProjectEventBus extends RedisProjectEventBus {
+  private readonly fallback = new InMemoryProjectEventBus();
+
+  private readonly recentLocalEventIds = new Map<string, number>();
+
+  publish(event: ProjectEvent): void {
+    this.rememberLocalEvent(event.id);
+    this.fallback.publish(event);
+
+    try {
+      super.publish(event);
+    } catch {
+      // The in-memory fallback already delivered the event locally.
+    }
+  }
+
+  subscribe(projectId: string, listener: ProjectEventListener): () => void {
+    const unsubscribeFallback = this.fallback.subscribe(projectId, listener);
+    let unsubscribeRedis: () => void = () => undefined;
+
+    try {
+      unsubscribeRedis = super.subscribe(projectId, (event) => {
+        if (this.wasRecentlyPublishedLocally(event.id)) {
+          return;
+        }
+
+        listener(event);
+      });
+    } catch {
+      // Continue serving the single-process fallback path.
+    }
+
+    return () => {
+      unsubscribeFallback();
+      unsubscribeRedis();
+    };
+  }
+
+  private rememberLocalEvent(eventId: string): void {
+    this.pruneRecentLocalEvents();
+    this.recentLocalEventIds.set(eventId, Date.now());
+  }
+
+  private wasRecentlyPublishedLocally(eventId: string): boolean {
+    this.pruneRecentLocalEvents();
+
+    const publishedAt = this.recentLocalEventIds.get(eventId);
+    if (!publishedAt) {
+      return false;
+    }
+
+    return Date.now() - publishedAt < RECENT_LOCAL_EVENT_TTL_MS;
+  }
+
+  private pruneRecentLocalEvents(): void {
+    const now = Date.now();
+
+    for (const [eventId, publishedAt] of this.recentLocalEventIds) {
+      if (now - publishedAt >= RECENT_LOCAL_EVENT_TTL_MS) {
+        this.recentLocalEventIds.delete(eventId);
+      }
+    }
+  }
+}
+
 export function createProjectEventBus(
   options: EventBusOptions = {},
 ): ProjectEventBus {
   const redisUrl = options.redisUrl ?? process.env.REDIS_URL;
 
   if (redisUrl) {
-    return new RedisProjectEventBus(redisUrl);
+    return new ResilientRedisProjectEventBus(redisUrl);
   }
 
   return new InMemoryProjectEventBus();

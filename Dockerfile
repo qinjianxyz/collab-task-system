@@ -2,8 +2,8 @@ FROM oven/bun:1.3.8 AS build
 
 WORKDIR /app
 
-COPY package.json ./
-RUN bun install
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
 COPY . .
 
@@ -24,5 +24,6 @@ COPY --from=build /app /app
 ENV PATH="/root/.bun/bin:${PATH}"
 ENV NODE_ENV=production
 EXPOSE 3000
+HEALTHCHECK --interval=10s --timeout=5s --retries=10 CMD curl -fsS http://127.0.0.1:3000/api/health >/dev/null || exit 1
 
 CMD ["sh", "./scripts/container-entrypoint.sh"]

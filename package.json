@@ -3,8 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Event-sourced collaborative task management with real-time sync, optimistic updates, and OSS-grade scaling proof.",
   "author": "Ray Qin",
   "license": "MIT",
+  "homepage": "https://github.com/qinjianxyz/collab-task-system#readme",
+  "bugs": {
+    "url": "https://github.com/qinjianxyz/collab-task-system/issues"
+  },
+  "keywords": [
+    "event-sourcing",
+    "nextjs",
+    "sse",
+    "collaboration",
+    "task-management",
+    "postgres",
+    "redis"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/qinjianxyz/collab-task-system.git"
@@ -18,10 +32,12 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "bun run test:unit && bun run test:integration",
+    "test": "bun run test:unit && bun run test:integration:bootstrapped",
     "test:unit": "vitest run test/unit",
     "test:integration": "vitest run --maxWorkers=1 test/integration",
-    "test:e2e": "playwright test",
+    "test:integration:bootstrapped": "bun run db:up && bun run db:migrate && bun run test:integration",
+    "test:e2e": "bun run db:up && bun run db:migrate && bun scripts/install-playwright.ts && bun run test:e2e:raw",
+    "test:e2e:raw": "playwright test",
     "db:up": "bun scripts/dev-stack.ts up",
     "db:down": "bun scripts/dev-stack.ts down",
     "db:reset": "bun run db:down && bun run db:up && bun run db:migrate",

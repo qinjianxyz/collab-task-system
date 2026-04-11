@@ -57,6 +57,7 @@ bun run dev
 Fallback stack helper:
 
 - `bun run db:up` starts Postgres and Redis
+- `bun run db:up` waits for both services to report healthy before returning
 - `bun run db:down` tears them down
 - `bun run db:reset` recreates the local database and reruns migrations
 
@@ -73,8 +74,9 @@ bun run build && bun run start -- --hostname 127.0.0.1 --port 3000
 
 ### Redis unavailable
 
-- event bus falls back to in-memory only if the app started without `REDIS_URL`
-- if `REDIS_URL` is configured but Redis becomes unavailable at runtime, publish/subscribe errors are swallowed to preserve request handling, but cross-instance fanout will degrade
+- if the app starts without `REDIS_URL`, collaboration services run in single-process in-memory mode
+- if `REDIS_URL` is configured but Redis becomes unavailable, the event bus, presence store, and write limiter fail open to process-local in-memory behavior
+- requests keep succeeding, but cross-instance fanout, shared presence, and globally coordinated rate limiting degrade until Redis is healthy again
 
 ### Slow SSE consumers
 
@@ -96,6 +98,15 @@ bun run typecheck
 bun run test
 bun run test:e2e
 ```
+
+- `bun run test` bootstraps PostgreSQL and Redis through Docker before migrations and integration tests.
+- `bun run test:e2e` does the same and installs Chromium, plus Linux browser dependencies when needed.
+
+Runtime readiness:
+
+- `GET /api/health` checks database and Redis reachability
+- the Docker Compose app service uses `/api/health` as its healthcheck target
+- the published container image also exposes the same readiness contract through `HEALTHCHECK`
 
 Scale verification:
 

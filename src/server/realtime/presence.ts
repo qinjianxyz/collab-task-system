@@ -378,12 +378,76 @@ export class RedisPresenceStore implements PresenceStore {
   }
 }
 
+export class ResilientRedisPresenceStore extends RedisPresenceStore {
+  private failedOpen = false;
+
+  private readonly fallback: InMemoryPresenceStore;
+
+  constructor(redisUrl: string, disconnectTtlMs = 5_000) {
+    super(redisUrl, disconnectTtlMs);
+    this.fallback = new InMemoryPresenceStore(disconnectTtlMs);
+  }
+
+  async getViewers(projectId: string): Promise<PresenceViewer[]> {
+    if (this.failedOpen) {
+      return this.fallback.getViewers(projectId);
+    }
+
+    try {
+      return await super.getViewers(projectId);
+    } catch {
+      this.failedOpen = true;
+      return this.fallback.getViewers(projectId);
+    }
+  }
+
+  scheduleRemoval(projectId: string, clientId: string): void {
+    try {
+      super.scheduleRemoval(projectId, clientId);
+    } catch {
+      this.failedOpen = true;
+    }
+
+    this.fallback.scheduleRemoval(projectId, clientId);
+  }
+
+  subscribe(projectId: string, listener: PresenceListener): () => void {
+    const unsubscribeFallback = this.fallback.subscribe(projectId, listener);
+    let unsubscribePrimary: () => void = () => undefined;
+
+    try {
+      unsubscribePrimary = super.subscribe(projectId, listener);
+    } catch {
+      this.failedOpen = true;
+    }
+
+    return () => {
+      unsubscribePrimary();
+      unsubscribeFallback();
+    };
+  }
+
+  async upsertViewer(projectId: string, viewer: PresenceViewer): Promise<void> {
+    if (this.failedOpen) {
+      await this.fallback.upsertViewer(projectId, viewer);
+      return;
+    }
+
+    try {
+      await super.upsertViewer(projectId, viewer);
+    } catch {
+      this.failedOpen = true;
+      await this.fallback.upsertViewer(projectId, viewer);
+    }
+  }
+}
+
 export function createPresenceStore(options: PresenceOptions = {}): PresenceStore {
   const disconnectTtlMs = options.disconnectTtlMs ?? 5_000;
   const redisUrl = options.redisUrl ?? process.env.REDIS_URL;
 
   if (redisUrl) {
-    return new RedisPresenceStore(redisUrl, disconnectTtlMs);
+    return new ResilientRedisPresenceStore(redisUrl, disconnectTtlMs);
   }
 
   return new InMemoryPresenceStore(disconnectTtlMs);

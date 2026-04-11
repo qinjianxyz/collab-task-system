@@ -362,4 +362,53 @@ describe("project event bus", () => {
 
     expect(bus).toBeInstanceOf(RedisProjectEventBus);
   });
+
+  it("fails open to local delivery when the redis bus cannot subscribe or publish", async () => {
+    vi.stubEnv("REDIS_URL", "redis://localhost:6379");
+
+    const eventBusModule = await import("../../src/server/realtime/event-bus");
+    const publishSpy = vi
+      .spyOn(eventBusModule.RedisProjectEventBus.prototype, "publish")
+      .mockImplementation(() => {
+        throw new Error("redis unavailable");
+      });
+    const subscribeSpy = vi
+      .spyOn(eventBusModule.RedisProjectEventBus.prototype, "subscribe")
+      .mockImplementation(() => {
+        throw new Error("redis unavailable");
+      });
+
+    const bus = eventBusModule.createProjectEventBus();
+    const received: ProjectEvent[] = [];
+    const unsubscribe = bus.subscribe("project_123", (event) => {
+      received.push(event);
+    });
+
+    bus.publish({
+      id: "evt_bus_fallback",
+      projectId: "project_123",
+      entityId: "task_123",
+      action: {
+        type: "task.create",
+        data: {
+          projectId: "project_123",
+          status: "todo",
+          title: "Fallback bus test",
+        },
+      },
+      clientId: "client_alpha",
+      userId: "alice",
+      timestamp: 1_716_000_000_000,
+      version: 1,
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      id: "evt_bus_fallback",
+    });
+
+    unsubscribe();
+    publishSpy.mockRestore();
+    subscribeSpy.mockRestore();
+  });
 });

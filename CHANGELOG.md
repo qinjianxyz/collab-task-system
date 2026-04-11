@@ -18,3 +18,7 @@
 - Zod-validated discriminated union event types shared across client and server.
 - Playwright end-to-end coverage for two-tab sync, presence, undo, activity feed, dependencies, and shortcuts.
 - Dockerized local stack with PostgreSQL 17, Redis 7, and health-check-gated startup.
+- Self-bootstrapping `bun run test` and `bun run test:e2e` verification paths for clean clones.
+- `/api/health`, container image `HEALTHCHECK`, and operations guidance for runtime readiness.
+- OpenAPI 3.1 contract plus human-readable API reference docs.
+- GitHub Actions CI, issue templates, PR template, CODEOWNERS, SECURITY, and CODE_OF_CONDUCT.
