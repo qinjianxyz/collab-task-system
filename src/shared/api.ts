@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   appendEventInputSchema,
+  loadedProjectSnapshotSchema,
   pagedProjectSnapshotSchema,
   projectEventSchema,
   projectSnapshotSchema,
@@ -37,6 +38,10 @@ export const pagedProjectSnapshotResponseSchema = z.object({
   snapshot: pagedProjectSnapshotSchema,
 });
 
+export const loadedProjectSnapshotResponseSchema = z.object({
+  snapshot: loadedProjectSnapshotSchema,
+});
+
 export const projectTaskPageResponseSchema = z.object({
   page: projectTaskPageSchema,
 });
@@ -63,6 +68,9 @@ export type AppendProjectEventResponse = z.infer<
 export type ProjectSnapshotResponse = z.infer<typeof projectSnapshotResponseSchema>;
 export type PagedProjectSnapshotResponse = z.infer<
   typeof pagedProjectSnapshotResponseSchema
+>;
+export type LoadedProjectSnapshotResponse = z.infer<
+  typeof loadedProjectSnapshotResponseSchema
 >;
 export type ProjectTaskPageResponse = z.infer<typeof projectTaskPageResponseSchema>;
 export type ProjectEventsResponse = z.infer<typeof projectEventsResponseSchema>;

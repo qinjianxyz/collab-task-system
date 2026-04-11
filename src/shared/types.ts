@@ -200,6 +200,10 @@ export const pagedProjectSnapshotSchema = z.object({
   taskPage: projectTaskPageSchema,
 });
 
+export const loadedProjectSnapshotSchema = projectSnapshotSchema.extend({
+  taskPage: projectTaskPageSchema,
+});
+
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskPriority = z.infer<typeof taskPrioritySchema>;
 export type TaskConfig = z.infer<typeof taskConfigSchema>;
@@ -214,3 +218,4 @@ export type ProjectEvent = z.infer<typeof projectEventSchema>;
 export type AppendEventInput = z.infer<typeof appendEventInputSchema>;
 export type ProjectSnapshot = z.infer<typeof projectSnapshotSchema>;
 export type PagedProjectSnapshot = z.infer<typeof pagedProjectSnapshotSchema>;
+export type LoadedProjectSnapshot = z.infer<typeof loadedProjectSnapshotSchema>;

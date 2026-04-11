@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import type { ProjectEvent, ProjectSnapshot } from "../../src/shared/types";
+import type {
+  ProjectEvent,
+  ProjectSnapshot,
+  ProjectTaskPage,
+} from "../../src/shared/types";
 import { createHistoryEntry } from "../../src/client/sync/history";
 
 const baseSnapshot: ProjectSnapshot = {
@@ -31,6 +35,19 @@ const baseSnapshot: ProjectSnapshot = {
   ],
   comments: [],
   version: 1,
+};
+
+const loadedTaskPage: ProjectTaskPage = {
+  tasks: baseSnapshot.tasks,
+  comments: [],
+  nextCursor: "cursor_1",
+  hasMore: true,
+  totalCount: 3,
+};
+
+const loadedSnapshot = {
+  ...baseSnapshot,
+  taskPage: loadedTaskPage,
 };
 
 describe("createHistoryEntry", () => {
@@ -152,5 +169,27 @@ describe("createHistoryEntry", () => {
         },
       },
     });
+  });
+
+  it("returns null for task updates when the task is not loaded in the current page window", () => {
+    const committedEvent: ProjectEvent = {
+      id: "evt_task_update_unloaded",
+      projectId: "project_1",
+      entityId: "task_99",
+      action: {
+        type: "task.update",
+        data: {
+          status: "done",
+        },
+      },
+      version: 2,
+      clientId: "client_1",
+      userId: "alice",
+      timestamp: 1_716_000_000_500,
+    };
+
+    const historyEntry = createHistoryEntry(loadedSnapshot, committedEvent);
+
+    expect(historyEntry).toBeNull();
   });
 });

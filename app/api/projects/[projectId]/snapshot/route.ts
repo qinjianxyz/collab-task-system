@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  loadedProjectSnapshotResponseSchema,
   pagedProjectSnapshotResponseSchema,
   projectSnapshotResponseSchema,
 } from "../../../../../src/shared/api";
@@ -40,6 +41,9 @@ export async function GET(
     };
 
     projectSnapshotResponseSchema.parse({
+      snapshot: compatibilitySnapshot,
+    });
+    loadedProjectSnapshotResponseSchema.parse({
       snapshot: compatibilitySnapshot,
     });
     pagedProjectSnapshotResponseSchema.parse({

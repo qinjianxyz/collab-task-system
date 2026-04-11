@@ -4,13 +4,15 @@ import {
   appendProjectEventResponseSchema,
   createProjectRequestSchema,
   createProjectResponseSchema,
+  loadedProjectSnapshotResponseSchema,
   projectEventsResponseSchema,
-  projectSnapshotResponseSchema,
+  projectTaskPageResponseSchema,
   type AppendProjectEventRequest,
   type CreateProjectRequest,
   type CreateProjectResponse,
+  type LoadedProjectSnapshotResponse,
   type ProjectEventsResponse,
-  type ProjectSnapshotResponse,
+  type ProjectTaskPageResponse,
 } from "../shared/api";
 import type { AppendEventInput } from "../shared/types";
 
@@ -64,12 +66,37 @@ export async function createProject(
 
 export async function fetchProjectSnapshot(
   projectId: string,
-): Promise<ProjectSnapshotResponse> {
+): Promise<LoadedProjectSnapshotResponse> {
   const response = await fetch(`/api/projects/${projectId}/snapshot`, {
     cache: "no-store",
   });
 
-  return parseResponse(response, projectSnapshotResponseSchema);
+  return parseResponse(response, loadedProjectSnapshotResponseSchema);
+}
+
+export async function fetchProjectTaskPage(
+  projectId: string,
+  {
+    after,
+    limit,
+  }: {
+    after?: string | null;
+    limit?: number;
+  } = {},
+): Promise<ProjectTaskPageResponse> {
+  const url = new URL(`/api/projects/${projectId}/tasks`, window.location.origin);
+  if (after) {
+    url.searchParams.set("after", after);
+  }
+  if (limit !== undefined) {
+    url.searchParams.set("limit", String(limit));
+  }
+
+  const response = await fetch(url.toString(), {
+    cache: "no-store",
+  });
+
+  return parseResponse(response, projectTaskPageResponseSchema);
 }
 
 export async function fetchProjectEvents(

@@ -8,16 +8,27 @@ import {
   useState,
 } from "react";
 
-import { type ApiError, appendProjectEvent, fetchProjectEvents, fetchProjectSnapshot } from "../api";
+import {
+  type ApiError,
+  appendProjectEvent,
+  fetchProjectEvents,
+  fetchProjectSnapshot,
+  fetchProjectTaskPage,
+} from "../api";
 import { applyActivityEvent, buildActivityFeed, type ActivityItem } from "../sync/activity";
 import { createHistoryEntry, type HistoryEntry } from "../sync/history";
-import { buildOptimisticEvent, deriveVisibleSnapshot, applyProjectEvent } from "../sync/reducer";
+import {
+  applyProjectEvent,
+  buildOptimisticEvent,
+  deriveVisibleSnapshot,
+  mergeTaskPage,
+} from "../sync/reducer";
 import type {
   AppendEventInput,
   EventAction,
+  LoadedProjectSnapshot,
   PresenceViewer,
   ProjectEvent,
-  ProjectSnapshot,
 } from "../../shared/types";
 
 type ConnectionStatus = "loading" | "connected" | "reconnecting";
@@ -45,9 +56,13 @@ type UseProjectSyncResult = {
   connectionStatus: ConnectionStatus;
   dispatch: (input: DispatchInput) => Promise<ProjectEvent>;
   error: string | null;
+  hasMoreTasks: boolean;
   isMutating: boolean;
+  isLoadingMoreTasks: boolean;
+  loadMoreTasks: () => Promise<void>;
   redo: () => Promise<void>;
-  snapshot: ProjectSnapshot | null;
+  snapshot: LoadedProjectSnapshot | null;
+  totalTaskCount: number;
   undo: () => Promise<void>;
   viewers: PresenceViewer[];
 };
@@ -70,9 +85,9 @@ function isConflictError(error: unknown): error is ApiError {
 }
 
 function applyEvents(
-  snapshot: ProjectSnapshot | null,
+  snapshot: LoadedProjectSnapshot | null,
   events: ProjectEvent[],
-): ProjectSnapshot | null {
+): LoadedProjectSnapshot | null {
   if (!snapshot) {
     return snapshot;
   }
@@ -88,7 +103,7 @@ export function useProjectSync(
   projectId: string,
   identity: Identity,
 ): UseProjectSyncResult {
-  const [serverSnapshot, setServerSnapshot] = useState<ProjectSnapshot | null>(null);
+  const [serverSnapshot, setServerSnapshot] = useState<LoadedProjectSnapshot | null>(null);
   const [pendingMutation, setPendingMutation] = useState<PendingMutation | null>(null);
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
@@ -96,8 +111,9 @@ export function useProjectSync(
   const [viewers, setViewers] = useState<PresenceViewer[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("loading");
   const [error, setError] = useState<string | null>(null);
+  const [isLoadingMoreTasks, setIsLoadingMoreTasks] = useState(false);
 
-  const snapshotRef = useRef<ProjectSnapshot | null>(null);
+  const snapshotRef = useRef<LoadedProjectSnapshot | null>(null);
   const pendingMutationRef = useRef<PendingMutation | null>(null);
   const undoStackRef = useRef<HistoryEntry[]>([]);
   const redoStackRef = useRef<HistoryEntry[]>([]);
@@ -131,7 +147,7 @@ export function useProjectSync(
     });
   });
 
-  const refreshSnapshot = useEffectEvent(async (): Promise<ProjectSnapshot> => {
+  const refreshSnapshot = useEffectEvent(async (): Promise<LoadedProjectSnapshot> => {
     const response = await fetchProjectSnapshot(projectId);
     const recentEventsResponse = await fetchProjectEvents(
       projectId,
@@ -147,6 +163,36 @@ export function useProjectSync(
     });
 
     return response.snapshot;
+  });
+
+  const loadMoreTasks = useEffectEvent(async (): Promise<void> => {
+    const snapshot = snapshotRef.current;
+    if (!snapshot?.taskPage.hasMore || !snapshot.taskPage.nextCursor) {
+      return;
+    }
+
+    setIsLoadingMoreTasks(true);
+
+    try {
+      const response = await fetchProjectTaskPage(projectId, {
+        after: snapshot.taskPage.nextCursor,
+        limit: 100,
+      });
+
+      startTransition(() => {
+        setServerSnapshot((current) =>
+          current ? mergeTaskPage(current, response.page) : current,
+        );
+        setError(null);
+      });
+    } catch (loadMoreError) {
+      startTransition(() => {
+        setError(toErrorMessage(loadMoreError));
+      });
+      throw loadMoreError;
+    } finally {
+      setIsLoadingMoreTasks(false);
+    }
   });
 
   useEffect(() => {
@@ -297,7 +343,7 @@ export function useProjectSync(
 
       const commitInput = async (
         mutationInput: AppendEventInput,
-        mutationBaseSnapshot: ProjectSnapshot,
+        mutationBaseSnapshot: LoadedProjectSnapshot,
       ): Promise<ProjectEvent> => {
         const response = await appendProjectEvent(projectId, mutationInput);
         const historyEntry =
@@ -476,12 +522,16 @@ export function useProjectSync(
     connectionStatus,
     dispatch,
     error,
+    hasMoreTasks: serverSnapshot?.taskPage.hasMore ?? false,
     isMutating: pendingMutation !== null,
+    isLoadingMoreTasks,
+    loadMoreTasks,
     redo,
     snapshot:
       serverSnapshot && pendingMutation
         ? deriveVisibleSnapshot(serverSnapshot, pendingMutation.optimisticEvent)
         : serverSnapshot,
+    totalTaskCount: serverSnapshot?.taskPage.totalCount ?? 0,
     undo,
     viewers,
   };
