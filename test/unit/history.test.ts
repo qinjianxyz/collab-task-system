@@ -171,6 +171,157 @@ describe("createHistoryEntry", () => {
     });
   });
 
+  it("creates a recreate/delete pair for task deletion", () => {
+    const committedEvent: ProjectEvent = {
+      id: "evt_task_delete",
+      projectId: "project_1",
+      entityId: "task_1",
+      action: {
+        type: "task.delete",
+        data: {},
+      },
+      version: 2,
+      clientId: "client_1",
+      userId: "alice",
+      timestamp: 1_716_000_000_450,
+    };
+
+    const historyEntry = createHistoryEntry(loadedSnapshot, committedEvent);
+
+    expect(historyEntry).toMatchObject({
+      targetVersion: 2,
+      undoAction: {
+        entityId: "task_1",
+        action: {
+          type: "task.create",
+          data: {
+            title: "Ship phase 2",
+            status: "todo",
+            projectId: "project_1",
+            assignedTo: [],
+            dependencies: [],
+            position: 1,
+          },
+        },
+      },
+      redoAction: {
+        entityId: "task_1",
+        action: {
+          type: "task.delete",
+        },
+      },
+    });
+  });
+
+  it("creates update inverses for comment updates", () => {
+    const snapshotWithComment = {
+      ...baseSnapshot,
+      comments: [
+        {
+          id: "comment_1",
+          taskId: "task_1",
+          content: "Old content",
+          author: "alice",
+          mentions: [],
+          createdAt: 1_716_000_000_300,
+          updatedAt: 1_716_000_000_300,
+        },
+      ],
+    };
+
+    const committedEvent: ProjectEvent = {
+      id: "evt_comment_update",
+      projectId: "project_1",
+      entityId: "comment_1",
+      action: {
+        type: "comment.update",
+        data: {
+          content: "New content",
+        },
+      },
+      version: 2,
+      clientId: "client_1",
+      userId: "alice",
+      timestamp: 1_716_000_000_500,
+    };
+
+    const historyEntry = createHistoryEntry(snapshotWithComment, committedEvent);
+
+    expect(historyEntry).toMatchObject({
+      undoAction: {
+        entityId: "comment_1",
+        action: {
+          type: "comment.update",
+          data: {
+            content: "Old content",
+          },
+        },
+      },
+      redoAction: {
+        entityId: "comment_1",
+        action: {
+          type: "comment.update",
+          data: {
+            content: "New content",
+          },
+        },
+      },
+    });
+  });
+
+  it("creates recreate/delete pairs for comment deletion", () => {
+    const snapshotWithComment = {
+      ...baseSnapshot,
+      comments: [
+        {
+          id: "comment_1",
+          taskId: "task_1",
+          content: "Old content",
+          author: "alice",
+          mentions: [],
+          createdAt: 1_716_000_000_300,
+          updatedAt: 1_716_000_000_300,
+        },
+      ],
+    };
+
+    const committedEvent: ProjectEvent = {
+      id: "evt_comment_delete",
+      projectId: "project_1",
+      entityId: "comment_1",
+      action: {
+        type: "comment.delete",
+        data: {},
+      },
+      version: 2,
+      clientId: "client_1",
+      userId: "alice",
+      timestamp: 1_716_000_000_600,
+    };
+
+    const historyEntry = createHistoryEntry(snapshotWithComment, committedEvent);
+
+    expect(historyEntry).toMatchObject({
+      undoAction: {
+        entityId: "comment_1",
+        action: {
+          type: "comment.create",
+          data: {
+            taskId: "task_1",
+            content: "Old content",
+            author: "alice",
+          },
+        },
+      },
+      redoAction: {
+        entityId: "comment_1",
+        action: {
+          type: "comment.delete",
+        },
+      },
+    });
+  });
+
   it("returns null for task updates when the task is not loaded in the current page window", () => {
     const committedEvent: ProjectEvent = {
       id: "evt_task_update_unloaded",

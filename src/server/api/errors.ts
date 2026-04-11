@@ -3,7 +3,9 @@ import { ZodError } from "zod";
 
 import {
   ConcurrencyConflictError,
+  DependencyCycleError,
   DomainError,
+  InvalidStatusTransitionError,
 } from "../domain/errors";
 
 export class BadRequestError extends Error {
@@ -44,6 +46,14 @@ export function handleRouteError(error: unknown): NextResponse {
 
   if (error instanceof ZodError) {
     return jsonError(422, "validation_error", error.issues[0]?.message ?? "validation failed");
+  }
+
+  if (error instanceof InvalidStatusTransitionError) {
+    return jsonError(422, "invalid_status_transition", error.message);
+  }
+
+  if (error instanceof DependencyCycleError) {
+    return jsonError(422, "dependency_cycle", error.message);
   }
 
   if (error instanceof DomainError) {

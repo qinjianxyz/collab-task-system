@@ -235,6 +235,95 @@ describe("project API routes", () => {
     expect(presenceWrite.status).toBe(422);
   });
 
+  it("returns a specific 422 payload when a blocked status transition is attempted", async () => {
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { POST: appendProjectEvent } = await import(
+      "../../app/api/projects/[projectId]/events/route"
+    );
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Blocked Transition",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+    const { projectId } = await createResponse.json();
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_fix_auth",
+        entityId: "task_fix_auth",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_000,
+        expectedVersion: 1,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Fix auth",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_ship_dashboard",
+        entityId: "task_ship_dashboard",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_100,
+        expectedVersion: 2,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Ship dashboard",
+            status: "todo",
+            projectId,
+            dependencies: ["task_fix_auth"],
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    const blockedResponse = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_ship_dashboard_update",
+        entityId: "task_ship_dashboard",
+        clientId: "client_beta",
+        userId: "bob",
+        timestamp: 1_716_000_000_200,
+        expectedVersion: 3,
+        action: {
+          type: "task.update",
+          data: {
+            status: "in_progress",
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(blockedResponse.status).toBe(422);
+    expect(await blockedResponse.json()).toMatchObject({
+      error: {
+        code: "invalid_status_transition",
+        message: 'Blocked: dependency "Fix auth" must be completed first.',
+      },
+    });
+  });
+
   it("returns a bounded snapshot page and fetches the next task window by cursor", async () => {
     const { POST: createProject } = await import("../../app/api/projects/route");
     const { POST: appendProjectEvent } = await import(
@@ -349,6 +438,78 @@ describe("project API routes", () => {
     expect(pagePayload.page.nextCursor).toBeNull();
   });
 
+  it("returns stable paging metadata on repeated snapshot reads", async () => {
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { POST: appendProjectEvent } = await import(
+      "../../app/api/projects/[projectId]/events/route"
+    );
+    const { GET: getSnapshot } = await import(
+      "../../app/api/projects/[projectId]/snapshot/route"
+    );
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Stable Paging",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+    const { projectId } = await createResponse.json();
+
+    for (const [index, title] of ["Task 1", "Task 2", "Task 3"].entries()) {
+      await appendProjectEvent(
+        createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+          id: `evt_stable_page_${index + 1}`,
+          entityId: `task_${index + 1}`,
+          clientId: "client_alpha",
+          userId: "alice",
+          timestamp: 1_716_000_000_000 + index,
+          expectedVersion: index + 1,
+          action: {
+            type: "task.create",
+            data: {
+              title,
+              status: "todo",
+              projectId,
+            },
+          },
+        }),
+        {
+          params: Promise.resolve({ projectId }),
+        },
+      );
+    }
+
+    const firstSnapshotResponse = await getSnapshot(
+      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot?taskLimit=2`),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+    const secondSnapshotResponse = await getSnapshot(
+      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot?taskLimit=2`),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(firstSnapshotResponse.status).toBe(200);
+    expect(secondSnapshotResponse.status).toBe(200);
+
+    const firstSnapshotPayload = await firstSnapshotResponse.json();
+    const secondSnapshotPayload = await secondSnapshotResponse.json();
+
+    expect(firstSnapshotPayload.snapshot.taskPage).toEqual(secondSnapshotPayload.snapshot.taskPage);
+    expect(firstSnapshotPayload.snapshot.taskPage).toMatchObject({
+      hasMore: true,
+      totalCount: 3,
+    });
+    expect(firstSnapshotPayload.snapshot.tasks.map((task: { id: string }) => task.id)).toEqual([
+      "task_1",
+      "task_2",
+    ]);
+  });
+
   it("returns 429 with Retry-After when the write rate limit is exceeded", async () => {
     vi.stubEnv("WRITE_RATE_LIMIT_LIMIT", "1");
     vi.stubEnv("WRITE_RATE_LIMIT_WINDOW_MS", "60000");
@@ -378,7 +539,7 @@ describe("project API routes", () => {
     );
 
     expect(limitedCreate.status).toBe(429);
-    expect(limitedCreate.headers.get("Retry-After")).toBeTruthy();
+    expect(Number(limitedCreate.headers.get("Retry-After"))).toBeGreaterThan(0);
     expect(await limitedCreate.json()).toMatchObject({
       error: {
         code: "rate_limited",
@@ -432,7 +593,7 @@ describe("project API routes", () => {
     );
 
     expect(limitedWrite.status).toBe(429);
-    expect(limitedWrite.headers.get("Retry-After")).toBeTruthy();
+    expect(Number(limitedWrite.headers.get("Retry-After"))).toBeGreaterThan(0);
     expect(await limitedWrite.json()).toMatchObject({
       error: {
         code: "rate_limited",

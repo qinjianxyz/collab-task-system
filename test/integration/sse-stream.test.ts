@@ -1,10 +1,28 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
-import { closeDatabasePool } from "../../src/server/db/client";
-import { resetDatabase, waitForDatabase } from "../../src/server/db/testing";
+import { closeDatabasePool, getDatabasePool } from "../../src/server/db/client";
+import { waitForDatabase } from "../../src/server/db/testing";
+import { runMigrations } from "../../src/server/db/migrate";
 import type { ProjectEvent } from "../../src/shared/types";
 
 const BASE_URL = "http://localhost:3000";
+
+function resetRealtimeSingletons(): void {
+  const runtime = globalThis as typeof globalThis & Record<symbol, unknown>;
+
+  delete runtime[Symbol.for("collab-task-system.project-event-bus")];
+  delete runtime[Symbol.for("collab-task-system.project-event-bus.emitter")];
+  delete runtime[Symbol.for("collab-task-system.presence-store")];
+}
 
 function createJsonRequest(url: string, method: string, body?: unknown): Request {
   return new Request(url, {
@@ -38,10 +56,27 @@ async function readChunk(
 describe("project SSE stream", () => {
   beforeAll(async () => {
     await waitForDatabase();
+    await runMigrations();
   });
 
   beforeEach(async () => {
-    await resetDatabase();
+    const pool = getDatabasePool();
+    const client = await pool.connect();
+
+    try {
+      await client.query("delete from comments");
+      await client.query("delete from tasks");
+      await client.query("delete from events");
+      await client.query("delete from projects");
+    } finally {
+      client.release();
+    }
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    resetRealtimeSingletons();
   });
 
   afterAll(async () => {
@@ -301,6 +336,236 @@ describe("project SSE stream", () => {
     expect(recoveryResponse.status).toBe(200);
     const recoveryPayload = await recoveryResponse.json();
     expect(recoveryPayload.events.map((event: ProjectEvent) => event.version)).toEqual([3, 4]);
+  });
+
+  it("keeps the stream open when Redis-backed presence initialization fails", async () => {
+    vi.stubEnv("REDIS_URL", "redis://127.0.0.1:6379");
+    resetRealtimeSingletons();
+
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { GET: openStream } = await import(
+      "../../app/api/projects/[projectId]/stream/route"
+    );
+    const { RedisPresenceStore } = await import(
+      "../../src/server/realtime/presence"
+    );
+
+    vi.spyOn(RedisPresenceStore.prototype, "upsertViewer").mockImplementation(
+      async () => {
+        throw new Error("redis unavailable");
+      },
+    );
+    vi.spyOn(RedisPresenceStore.prototype, "getViewers").mockImplementation(
+      async () => {
+        throw new Error("redis unavailable");
+      },
+    );
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Presence fallback",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+    const { projectId } = await createResponse.json();
+
+    const abortController = new AbortController();
+    const streamResponse = await openStream(
+      new Request(
+        `${BASE_URL}/api/projects/${projectId}/stream?clientId=client_alpha&userId=alice&location=project`,
+        {
+          signal: abortController.signal,
+        },
+      ),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(streamResponse.status).toBe(200);
+    const reader = streamResponse.body!.getReader();
+
+    const versionChunk = await readChunk(reader);
+    expect(versionChunk).toContain("event: version");
+
+    const presenceChunk = await readChunk(reader);
+    expect(presenceChunk).toContain("event: presence");
+    expect(presenceChunk).toContain("\"userId\":\"alice\"");
+
+    abortController.abort();
+    await reader.cancel();
+  });
+
+  it("delivers events locally when Redis publish fails after subscribe", async () => {
+    vi.stubEnv("REDIS_URL", "redis://127.0.0.1:6379");
+    resetRealtimeSingletons();
+
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { GET: openStream } = await import(
+      "../../app/api/projects/[projectId]/stream/route"
+    );
+    const { POST: appendProjectEvent } = await import(
+      "../../app/api/projects/[projectId]/events/route"
+    );
+    const { RedisProjectEventBus } = await import(
+      "../../src/server/realtime/event-bus"
+    );
+
+    vi.spyOn(RedisProjectEventBus.prototype, "publish").mockImplementation(() => {
+      throw new Error("redis unavailable");
+    });
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Bus fallback",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+    const { projectId } = await createResponse.json();
+
+    const abortController = new AbortController();
+    const streamResponse = await openStream(
+      new Request(
+        `${BASE_URL}/api/projects/${projectId}/stream?clientId=client_alpha&userId=alice&location=project`,
+        {
+          signal: abortController.signal,
+        },
+      ),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    const reader = streamResponse.body!.getReader();
+    await readChunk(reader);
+    await readChunk(reader);
+
+    const appendResponse = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_bus_fallback",
+        entityId: "task_1",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_900,
+        expectedVersion: 1,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Fallback publish",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(appendResponse.status).toBe(201);
+
+    const eventChunk = await readChunk(reader);
+    expect(eventChunk).toContain("event: project-event");
+    expect(eventChunk).toContain("\"id\":\"evt_bus_fallback\"");
+
+    abortController.abort();
+    await reader.cancel();
+  });
+
+  it("recovers through events-since after a closed stream misses events", async () => {
+    vi.stubEnv("SSE_BUFFER_LIMIT", "1");
+    resetRealtimeSingletons();
+
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { GET: openStream } = await import(
+      "../../app/api/projects/[projectId]/stream/route"
+    );
+    const { POST: appendProjectEvent, GET: getEventsSince } = await import(
+      "../../app/api/projects/[projectId]/events/route"
+    );
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Recovery",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+    const { projectId } = await createResponse.json();
+
+    const abortController = new AbortController();
+    const streamResponse = await openStream(
+      new Request(`${BASE_URL}/api/projects/${projectId}/stream`, {
+        signal: abortController.signal,
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    const reader = streamResponse.body!.getReader();
+    const versionChunk = await readChunk(reader);
+    expect(versionChunk).toContain("event: version");
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_recovery_1",
+        entityId: "task_recovery_1",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_001_000,
+        expectedVersion: 1,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Recovery 1",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    abortController.abort();
+    await reader.cancel();
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_recovery_2",
+        entityId: "task_recovery_2",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_001_001,
+        expectedVersion: 2,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Recovery 2",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    const recoveryResponse = await getEventsSince(
+      new Request(`${BASE_URL}/api/projects/${projectId}/events?since=1`),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(recoveryResponse.status).toBe(200);
+    const recoveryPayload = await recoveryResponse.json();
+    expect(recoveryPayload.events.map((event: ProjectEvent) => event.version)).toEqual([2, 3]);
   });
 });
 

@@ -1,5 +1,7 @@
 import { expect, test, type Browser } from "@playwright/test";
 
+import { closeDatabasePool } from "../../src/server/db/client";
+import { resetDatabase, waitForDatabase } from "../../src/server/db/testing";
 import { appendEvent } from "../../src/server/events/event-store";
 
 const baseTimestamp = 1_716_000_000_000;
@@ -59,6 +61,33 @@ async function seedTaskRange(
     timestamp += 1;
   }
 }
+
+test.beforeAll(async () => {
+  await waitForDatabase();
+});
+
+test.beforeEach(async () => {
+  await resetDatabase();
+});
+
+test.afterAll(async () => {
+  await closeDatabasePool();
+});
+
+test("creates a project from the landing page and navigates into the workspace", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  await page.getByLabel("Display name").fill("alice");
+  await page.getByLabel("Project name").fill("Launch Ready");
+  await page.getByRole("button", { name: "Create project" }).click();
+
+  await expect(page).toHaveURL(/\/projects\/.+$/);
+  await expect(page.getByRole("heading", { name: "Launch Ready" })).toBeVisible();
+  await expect(page.locator(".status-pill")).toHaveText("connected");
+  await expect(page.locator(".viewer-chip")).toContainText(["alice"]);
+});
 
 test("two project pages converge when a task is appended through the API", async ({
   browser,
@@ -175,6 +204,81 @@ test("presence, activity, undo, and redo converge across two browser contexts", 
 
   await expect(alicePage.getByRole("heading", { name: "Undo me" })).toBeVisible();
   await expect(bobPage.getByRole("heading", { name: "Undo me" })).toBeVisible();
+
+  await aliceContext.close();
+  await bobContext.close();
+});
+
+test("stale clients recover from a version conflict and converge after retry", async ({
+  browser,
+  request,
+}) => {
+  const createProjectResponse = await request.post("/api/projects", {
+    data: {
+      name: "Conflict Demo",
+      clientId: "client_alice",
+      userId: "alice",
+    },
+  });
+
+  expect(createProjectResponse.ok()).toBeTruthy();
+  const { projectId } = (await createProjectResponse.json()) as { projectId: string };
+
+  await request.post(`/api/projects/${projectId}/events`, {
+    data: {
+      id: crypto.randomUUID(),
+      entityId: "task_conflict",
+      clientId: "client_alice",
+      userId: "alice",
+      timestamp: baseTimestamp,
+      expectedVersion: 1,
+      action: {
+        type: "task.create",
+        data: {
+          title: "Race task",
+          status: "todo",
+          projectId,
+        },
+      },
+    },
+  });
+
+  const aliceContext = await createIdentityContext(browser, {
+    clientId: "client_alice",
+    displayName: "alice",
+  });
+  const bobContext = await createIdentityContext(browser, {
+    clientId: "client_bob",
+    displayName: "bob",
+  });
+
+  await bobContext.route(`**/api/projects/${projectId}/stream**`, (route) => route.abort());
+
+  const alicePage = await aliceContext.newPage();
+  const bobPage = await bobContext.newPage();
+
+  await alicePage.goto(`/projects/${projectId}`);
+  await bobPage.goto(`/projects/${projectId}`);
+
+  await expect(alicePage.locator(".status-pill")).toHaveText("connected");
+  await expect(bobPage.locator(".status-pill")).toHaveText("reconnecting");
+
+  const aliceTaskCard = alicePage.locator("article", {
+    has: alicePage.getByRole("heading", { name: "Race task" }),
+  });
+  await aliceTaskCard.locator(".status-button").click();
+  await expect(aliceTaskCard.locator(".status-button")).toHaveText("in_progress");
+  await aliceTaskCard.locator(".status-button").click();
+  await expect(aliceTaskCard.locator(".status-button")).toHaveText("done");
+
+  const bobTaskCard = bobPage.locator("article", {
+    has: bobPage.getByRole("heading", { name: "Race task" }),
+  });
+  await bobTaskCard.locator(".status-button").click();
+
+  await expect(bobTaskCard.locator(".status-button")).toHaveText("in_progress");
+  await expect(aliceTaskCard.locator(".status-button")).toHaveText("in_progress");
+  await expect(bobPage.locator(".error-banner")).toHaveCount(0);
 
   await aliceContext.close();
   await bobContext.close();
@@ -323,4 +427,53 @@ test("large task lists stay windowed and can load the next page", async ({
     .toBeLessThanOrEqual(16);
 
   await aliceContext.close();
+});
+
+test("offline clients reconnect, catch up missed events, and return to connected", async ({
+  browser,
+  request,
+}) => {
+  const createProjectResponse = await request.post("/api/projects", {
+    data: {
+      name: "Reconnect Demo",
+      clientId: "client_alice",
+      userId: "alice",
+    },
+  });
+
+  expect(createProjectResponse.ok()).toBeTruthy();
+  const { projectId } = (await createProjectResponse.json()) as { projectId: string };
+
+  const aliceContext = await createIdentityContext(browser, {
+    clientId: "client_alice",
+    displayName: "alice",
+  });
+  const bobContext = await createIdentityContext(browser, {
+    clientId: "client_bob",
+    displayName: "bob",
+  });
+
+  const alicePage = await aliceContext.newPage();
+  const bobPage = await bobContext.newPage();
+
+  await alicePage.goto(`/projects/${projectId}`);
+  await bobPage.goto(`/projects/${projectId}`);
+
+  await expect(alicePage.locator(".status-pill")).toHaveText("connected");
+  await expect(bobPage.locator(".status-pill")).toHaveText("connected");
+
+  await bobContext.setOffline(true);
+
+  await alicePage.getByLabel("Add task").fill("Missed while offline");
+  await alicePage.getByRole("button", { name: "Add task" }).click();
+  await expect(alicePage.getByRole("heading", { name: "Missed while offline" })).toBeVisible();
+
+  await bobContext.setOffline(false);
+
+  await expect(bobPage.locator(".status-pill")).toHaveText("connected");
+  await expect(bobPage.locator(".error-banner")).toHaveCount(0);
+  await expect(bobPage.getByRole("heading", { name: "Missed while offline" })).toBeVisible();
+
+  await aliceContext.close();
+  await bobContext.close();
 });

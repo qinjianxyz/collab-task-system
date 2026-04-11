@@ -58,6 +58,35 @@ const loadedSnapshot = {
   taskPage: loadedTaskPage,
 };
 
+const loadedSnapshotWithComment = {
+  ...loadedSnapshot,
+  comments: [
+    {
+      id: "comment_1",
+      taskId: "task_1",
+      content: "Seeded comment",
+      author: "alice",
+      mentions: [],
+      createdAt: 1_716_000_000_015,
+      updatedAt: 1_716_000_000_015,
+    },
+  ],
+  taskPage: {
+    ...loadedTaskPage,
+    comments: [
+      {
+        id: "comment_1",
+        taskId: "task_1",
+        content: "Seeded comment",
+        author: "alice",
+        mentions: [],
+        createdAt: 1_716_000_000_015,
+        updatedAt: 1_716_000_000_015,
+      },
+    ],
+  },
+};
+
 describe("project sync reducer", () => {
   it("applies committed task and comment events in order", () => {
     const taskCreated: ProjectEvent = {
@@ -204,6 +233,97 @@ describe("project sync reducer", () => {
     expect(merged.comments.map((comment) => comment.id)).toEqual(["comment_2"]);
     expect(merged.taskPage.hasMore).toBe(false);
     expect(merged.taskPage.nextCursor).toBeNull();
+  });
+
+  it("keeps the loaded task window deduplicated and sorted when merging a mixed-order page", () => {
+    const merged = mergeTaskPage(loadedSnapshot, {
+      tasks: [
+        {
+          id: "task_3",
+          projectId: "project_1",
+          title: "Third page task",
+          status: "todo",
+          assignedTo: [],
+          configuration: {
+            tags: [],
+            customFields: {},
+          },
+          dependencies: [],
+          position: 3,
+          createdAt: 1_716_000_000_030,
+          updatedAt: 1_716_000_000_030,
+        },
+        {
+          id: "task_1",
+          projectId: "project_1",
+          title: "Loaded task",
+          status: "in_progress",
+          assignedTo: [],
+          configuration: {
+            tags: [],
+            customFields: {},
+          },
+          dependencies: [],
+          position: 1,
+          createdAt: 1_716_000_000_010,
+          updatedAt: 1_716_000_000_040,
+        },
+      ],
+      comments: [],
+      nextCursor: "cursor_2",
+      hasMore: true,
+      totalCount: 3,
+    });
+
+    expect(merged.tasks.map((task) => task.id)).toEqual(["task_1", "task_3"]);
+    expect(merged.tasks.map((task) => task.status)).toEqual(["in_progress", "todo"]);
+    expect(merged.taskPage.totalCount).toBe(3);
+  });
+
+  it("removes loaded task comments and decrements the loaded count on delete", () => {
+    const deleted = applyProjectEvent(loadedSnapshotWithComment, {
+      id: "evt_task_delete",
+      projectId: "project_1",
+      entityId: "task_1",
+      action: {
+        type: "task.delete",
+        data: {},
+      },
+      version: 2,
+      clientId: "client_alpha",
+      userId: "alice",
+      timestamp: 1_716_000_000_200,
+    });
+
+    expect(deleted.version).toBe(2);
+    expect(deleted.tasks).toHaveLength(0);
+    expect(deleted.comments).toHaveLength(0);
+    expect(deleted.taskPage.totalCount).toBe(2);
+    expect(deleted.taskPage.hasMore).toBe(true);
+  });
+
+  it("increments the total task count once when a new task lands inside the loaded window", () => {
+    const updated = applyProjectEvent(loadedSnapshot, {
+      id: "evt_task_create_loaded",
+      projectId: "project_1",
+      entityId: "task_2",
+      action: {
+        type: "task.create",
+        data: {
+          title: "Inserted task",
+          status: "todo",
+          projectId: "project_1",
+          position: 0.5,
+        },
+      },
+      version: 2,
+      clientId: "client_alpha",
+      userId: "alice",
+      timestamp: 1_716_000_000_200,
+    });
+
+    expect(updated.taskPage.totalCount).toBe(4);
+    expect(updated.tasks.map((task) => task.id)).toEqual(["task_2", "task_1"]);
   });
 
   it("advances version but ignores updates for unloaded tasks", () => {
