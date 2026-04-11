@@ -170,8 +170,13 @@ Requirements:
 
 - [ ] **Step 4: Re-run the targeted tests**
 
-Run: `bunx vitest run test/unit/workspace-smoke.test.ts`
-Expected: PASS
+Run:
+- `bunx vitest run test/unit/workspace-smoke.test.ts`
+- `PLAYWRIGHT_USE_EXISTING_SERVER=1 PLAYWRIGHT_PORT=3010 bunx playwright test test/e2e/two-tab-sync.spec.ts`
+
+Expected:
+- PASS
+- PASS
 
 - [ ] **Step 5: Commit**
 
@@ -270,6 +275,7 @@ Cover:
 - bounded queue behavior
 - slow-consumer overflow handling
 - clean disconnect semantics
+- reconnect recovery via `events?since=N` after forced disconnect
 
 - [ ] **Step 2: Run the targeted tests**
 
@@ -338,6 +344,7 @@ git commit -m "feat: add write-path rate limiting"
 - Create: `load/append-throughput.js`
 - Create: `load/realtime-fanout.js`
 - Create: `load/reconnect-pressure.js`
+- Create: `load/paged-initial-load.js`
 - Create: `load/README.md`
 
 - [ ] **Step 1: Write the seed and load scenarios**
@@ -349,6 +356,7 @@ Load:
 - append throughput
 - SSE fan-out
 - reconnect pressure
+- paged initial load
 
 - [ ] **Step 2: Run the seed script locally**
 
@@ -361,13 +369,14 @@ Run:
 - `k6 run load/append-throughput.js`
 - `k6 run load/realtime-fanout.js`
 - `k6 run load/reconnect-pressure.js`
+- `k6 run load/paged-initial-load.js`
 
 Expected: results captured for documentation
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add scripts/seed-large-project.ts load/append-throughput.js load/realtime-fanout.js load/reconnect-pressure.js load/README.md
+git add scripts/seed-large-project.ts load/append-throughput.js load/realtime-fanout.js load/reconnect-pressure.js load/paged-initial-load.js load/README.md
 git commit -m "feat: add scale seed and load scenarios"
 ```
 
@@ -378,8 +387,6 @@ git commit -m "feat: add scale seed and load scenarios"
 - Modify: `docs/architecture.md`
 - Create: `docs/scaling.md`
 - Create: `docs/operations.md`
-- Modify: `CONTRIBUTING.md`
-- Modify: `CHANGELOG.md`
 
 - [ ] **Step 1: Update docs to reflect shipped scale features**
 
