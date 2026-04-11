@@ -2,8 +2,10 @@ import { z } from "zod";
 
 import {
   appendEventInputSchema,
+  pagedProjectSnapshotSchema,
   projectEventSchema,
   projectSnapshotSchema,
+  projectTaskPageSchema,
 } from "./types";
 
 export const createProjectRequestSchema = z.object({
@@ -31,6 +33,14 @@ export const projectSnapshotResponseSchema = z.object({
   snapshot: projectSnapshotSchema,
 });
 
+export const pagedProjectSnapshotResponseSchema = z.object({
+  snapshot: pagedProjectSnapshotSchema,
+});
+
+export const projectTaskPageResponseSchema = z.object({
+  page: projectTaskPageSchema,
+});
+
 export const projectEventsResponseSchema = z.object({
   events: z.array(projectEventSchema),
 });
@@ -51,5 +61,9 @@ export type AppendProjectEventResponse = z.infer<
   typeof appendProjectEventResponseSchema
 >;
 export type ProjectSnapshotResponse = z.infer<typeof projectSnapshotResponseSchema>;
+export type PagedProjectSnapshotResponse = z.infer<
+  typeof pagedProjectSnapshotResponseSchema
+>;
+export type ProjectTaskPageResponse = z.infer<typeof projectTaskPageResponseSchema>;
 export type ProjectEventsResponse = z.infer<typeof projectEventsResponseSchema>;
 export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;

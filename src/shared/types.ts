@@ -60,6 +60,16 @@ export const presenceViewerSchema = z.object({
   connectedAt: z.number().int().nonnegative(),
 });
 
+export const taskCursorSchema = z.string().min(1);
+
+export const projectTaskPageSchema = z.object({
+  tasks: z.array(taskSchema),
+  comments: z.array(commentSchema),
+  nextCursor: taskCursorSchema.nullable(),
+  hasMore: z.boolean(),
+  totalCount: z.number().int().nonnegative(),
+});
+
 const projectCreateActionSchema = z.object({
   type: z.literal("project.create"),
   data: z.object({
@@ -184,6 +194,12 @@ export const projectSnapshotSchema = z.object({
   version: z.number().int().nonnegative(),
 });
 
+export const pagedProjectSnapshotSchema = z.object({
+  project: projectSchema,
+  version: z.number().int().nonnegative(),
+  taskPage: projectTaskPageSchema,
+});
+
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskPriority = z.infer<typeof taskPrioritySchema>;
 export type TaskConfig = z.infer<typeof taskConfigSchema>;
@@ -191,7 +207,10 @@ export type Project = z.infer<typeof projectSchema>;
 export type Task = z.infer<typeof taskSchema>;
 export type Comment = z.infer<typeof commentSchema>;
 export type PresenceViewer = z.infer<typeof presenceViewerSchema>;
+export type TaskCursor = z.infer<typeof taskCursorSchema>;
+export type ProjectTaskPage = z.infer<typeof projectTaskPageSchema>;
 export type EventAction = z.infer<typeof eventActionSchema>;
 export type ProjectEvent = z.infer<typeof projectEventSchema>;
 export type AppendEventInput = z.infer<typeof appendEventInputSchema>;
 export type ProjectSnapshot = z.infer<typeof projectSnapshotSchema>;
+export type PagedProjectSnapshot = z.infer<typeof pagedProjectSnapshotSchema>;
