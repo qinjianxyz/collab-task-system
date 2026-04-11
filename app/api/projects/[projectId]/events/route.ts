@@ -12,6 +12,10 @@ import {
   getEventsSince,
 } from "../../../../../src/server/events/event-store";
 import { publishProjectEvent } from "../../../../../src/server/realtime/project-stream";
+import {
+  createRateLimitResponse,
+  getWriteRateLimiter,
+} from "../../../../../src/server/realtime/rate-limiter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,6 +48,14 @@ export async function POST(
   try {
     const { projectId } = await context.params;
     const body = await readJsonBody(request, appendProjectEventRequestSchema);
+    const rateLimit = await getWriteRateLimiter().check(
+      `project:event:${projectId}:${body.clientId}`,
+    );
+
+    if (!rateLimit.allowed) {
+      return createRateLimitResponse(rateLimit);
+    }
+
     const event = await appendEvent({
       ...body,
       projectId,

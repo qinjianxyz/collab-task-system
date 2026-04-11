@@ -8,6 +8,10 @@ import { appendEvent } from "../../../src/server/events/event-store";
 import { handleRouteError } from "../../../src/server/api/errors";
 import { readJsonBody } from "../../../src/server/api/requests";
 import { publishProjectEvent } from "../../../src/server/realtime/project-stream";
+import {
+  createRateLimitResponse,
+  getWriteRateLimiter,
+} from "../../../src/server/realtime/rate-limiter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,6 +19,14 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request): Promise<NextResponse> {
   try {
     const body = await readJsonBody(request, createProjectRequestSchema);
+    const rateLimit = await getWriteRateLimiter().check(
+      `project:create:${body.clientId}`,
+    );
+
+    if (!rateLimit.allowed) {
+      return createRateLimitResponse(rateLimit);
+    }
+
     const projectId = crypto.randomUUID();
     const event = await appendEvent({
       id: crypto.randomUUID(),

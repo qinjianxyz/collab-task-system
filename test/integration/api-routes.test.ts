@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { closeDatabasePool } from "../../src/server/db/client";
 import { resetDatabase, waitForDatabase } from "../../src/server/db/testing";
@@ -22,6 +22,10 @@ describe("project API routes", () => {
 
   beforeEach(async () => {
     await resetDatabase();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   afterAll(async () => {
@@ -322,5 +326,96 @@ describe("project API routes", () => {
     ]);
     expect(pagePayload.page.hasMore).toBe(false);
     expect(pagePayload.page.nextCursor).toBeNull();
+  });
+
+  it("returns 429 with Retry-After when the write rate limit is exceeded", async () => {
+    vi.stubEnv("WRITE_RATE_LIMIT_LIMIT", "1");
+    vi.stubEnv("WRITE_RATE_LIMIT_WINDOW_MS", "60000");
+
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { POST: appendProjectEvent } = await import(
+      "../../app/api/projects/[projectId]/events/route"
+    );
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Limited",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+
+    expect(createResponse.status).toBe(201);
+    const { projectId } = await createResponse.json();
+
+    const limitedCreate = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Limited Again",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+
+    expect(limitedCreate.status).toBe(429);
+    expect(limitedCreate.headers.get("Retry-After")).toBeTruthy();
+    expect(await limitedCreate.json()).toMatchObject({
+      error: {
+        code: "rate_limited",
+      },
+    });
+
+    const firstWrite = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_rate_limit_1",
+        entityId: "task_1",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_000,
+        expectedVersion: 1,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Allowed",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(firstWrite.status).toBe(201);
+
+    const limitedWrite = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_rate_limit_2",
+        entityId: "task_2",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_500,
+        expectedVersion: 2,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Blocked",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(limitedWrite.status).toBe(429);
+    expect(limitedWrite.headers.get("Retry-After")).toBeTruthy();
+    expect(await limitedWrite.json()).toMatchObject({
+      error: {
+        code: "rate_limited",
+      },
+    });
   });
 });
