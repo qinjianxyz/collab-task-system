@@ -2,8 +2,9 @@
 
 ## Prerequisites
 
-- Node 24+ or Bun 1.3+
+- Node 22+ or Bun 1.3+
 - Docker Desktop or compatible Docker engine
+- `mise` is optional, but the repo includes `.mise.toml` to pin Node and Bun
 
 ## Development Setup
 
@@ -22,6 +23,7 @@ If `localhost:3000` is occupied, set `APP_PORT` for Docker workflows or pass a d
 bun run typecheck
 bun run test
 bun run test:e2e
+bun run load:seed
 ```
 
 ## Pull Requests
@@ -30,4 +32,4 @@ bun run test:e2e
 - Add or update tests for behavior changes.
 - Preserve the event-sourced write path: append event and projection update in one transaction.
 - Do not add direct CRUD writes that bypass the event log.
-- Document any protocol or schema changes in `README.md` and `docs/architecture.md`.
+- Document protocol, scaling, or operations changes in `README.md`, `docs/architecture.md`, `docs/scaling.md`, and `docs/operations.md`.
