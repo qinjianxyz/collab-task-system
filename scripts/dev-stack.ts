@@ -4,6 +4,7 @@ type CommandName = "up" | "down";
 
 const POSTGRES_CONTAINER = "collab-task-system-postgres";
 const POSTGRES_VOLUME = "collab-task-system-postgres-data";
+const REDIS_CONTAINER = "collab-task-system-redis";
 
 function run(command: string, args: string[], allowFailure = false): void {
   const result = spawnSync(command, args, {
@@ -25,6 +26,7 @@ function hasDockerComposePlugin(): boolean {
 
 function upWithFallback(): void {
   run("docker", ["rm", "-f", POSTGRES_CONTAINER], true);
+  run("docker", ["rm", "-f", REDIS_CONTAINER], true);
 
   run("docker", [
     "run",
@@ -43,10 +45,26 @@ function upWithFallback(): void {
     `${POSTGRES_VOLUME}:/var/lib/postgresql/data`,
     "postgres:17",
   ]);
+
+  run("docker", [
+    "run",
+    "-d",
+    "--name",
+    REDIS_CONTAINER,
+    "-p",
+    "6379:6379",
+    "redis:7-alpine",
+    "redis-server",
+    "--save",
+    "",
+    "--appendonly",
+    "no",
+  ]);
 }
 
 function downWithFallback(): void {
   run("docker", ["rm", "-f", POSTGRES_CONTAINER], true);
+  run("docker", ["rm", "-f", REDIS_CONTAINER], true);
 }
 
 function main(): void {
@@ -59,7 +77,7 @@ function main(): void {
 
   if (hasDockerComposePlugin()) {
     if (command === "up") {
-      run("docker", ["compose", "up", "-d", "postgres"]);
+      run("docker", ["compose", "up", "-d", "postgres", "redis"]);
       return;
     }
 
