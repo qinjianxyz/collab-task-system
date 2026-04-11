@@ -7,36 +7,47 @@ This system treats collaboration as a projection problem over one append-only st
 The same event history drives:
 
 - current project state
-- real-time fan-out
+- real-time SSE fanout
 - optimistic client reconciliation
 - undo and redo
-- activity feed
-- future audit, rebuild, pagination, and notifications
+- presence snapshots
+- activity feed entries
+- future rebuilds, audit, and notifications
 
-CRUD systems usually build those concerns separately. This project does not.
+That is the architectural difference from a CRUD app with realtime bolted on later.
 
 ## System Diagram
 
 ```text
-Browser A            Browser B
-   |                    ^
-   | POST event         | SSE project-event / presence
-   v                    |
-      Next.js API routes
-              |
-              v
-        Event store append
-              |
-     same SQL transaction
-   event log + projections
-              |
-              v
-        SSE broadcaster
+Browser A / Browser B
+        | optimistic action
+        v
+  Next.js API route
+        |
+        | validate + append + project
+        | one SQL transaction
+        v
+    PostgreSQL
+   events + projections
+        |
+        | publish committed event
+        v
+ Project event bus
+  | in-memory fallback
+  | or Redis pub/sub
+        v
+   SSE stream route
+  | bounded queue
+  | heartbeat
+        v
+ Connected clients
 ```
 
 ## Event Model
 
-Each write starts as an append command:
+Every mutation is explicit in a discriminated union.
+
+Write requests send:
 
 - `id`
 - `entityId`
@@ -49,13 +60,14 @@ Each write starts as an append command:
 On commit, the server assigns:
 
 - `version`
-- optional `parentVersion` for inversions
+- optional `parentVersion`
 
 Important invariants:
 
-- versions are monotonic per project
+- project versions are monotonic
 - idempotency is scoped to `(project_id, event_id)`
-- presence is explicit in the shared event union but is rejected from durable storage
+- `presence.update` is part of the shared model but rejected from durable storage
+- append + projection happens in the same transaction
 
 ## Persistence Model
 
@@ -66,104 +78,172 @@ PostgreSQL stores:
 - `comments`
 - `events`
 
-`events` is the source of truth. Projection tables are the read model used for snapshots, validation, and UI queries.
+`events` is the source of truth. Projection tables exist to serve snapshots, domain validation, and UI queries efficiently.
 
-The critical rule is transactional coupling: appending the event and mutating the projections happen in the same transaction. If projection application fails, the event does not commit.
+The critical rule is transactional coupling:
+
+1. insert event
+2. apply projection
+3. bump project version
+4. commit
+
+If projection application fails, the event does not commit.
 
 ## Write Path
 
 1. Parse the append command with shared Zod schemas.
-2. Reject ephemeral writes such as `presence.update`.
+2. Reject ephemeral mutations such as durable `presence.update`.
 3. Lock the target project row.
 4. Check `expectedVersion` against `projects.current_version`.
-5. Validate domain rules, including dependency DAG constraints and blocked status transitions.
+5. Validate dependency DAG constraints and blocked status transitions.
 6. Insert the event into `events`.
-7. Apply projection updates.
-8. Bump `projects.current_version`.
+7. Apply the projection updates.
+8. Update `projects.current_version`.
 9. Commit.
-10. Broadcast the committed event to SSE subscribers.
+10. Publish the committed event to the project event bus.
 
-That gives strict ordering per project without requiring a global event coordinator.
+The bus selects:
 
-## Read and Sync Path
+- in-memory `EventEmitter` for single-instance demos
+- Redis pub/sub when `REDIS_URL` is configured
 
-The client starts from a snapshot, then stays current through incremental replay:
+## Read Path
 
-1. `GET /api/projects/:id/snapshot`
-2. `GET /api/projects/:id/events?since=N` for backfill and activity seed
-3. `GET /api/projects/:id/stream` over SSE for live convergence
+The read path is now explicitly paged.
+
+Initial load:
+
+1. `GET /api/projects/:id/snapshot?taskLimit=100`
+2. server returns project metadata, current version, and the first task window
+3. comments are scoped to the loaded tasks only
+
+Incremental load:
+
+1. `GET /api/projects/:id/tasks?after=<cursor>&limit=100`
+2. cursor ordering is stable on `(position, id)`
+3. client merges the next page into the loaded window
+
+Render path:
+
+- the client virtualizes task cards
+- only the visible task window is mounted in the DOM
+- dependency selection is capped to a filtered subset of loaded tasks so the form does not recreate the large-list problem
+
+## Sync Path
 
 The client hook keeps:
 
 - the last committed server snapshot
 - one optimistic overlay mutation
 - undo and redo stacks
-- live presence state
-- live activity entries
+- presence state
+- activity entries
 
-When a client writes:
+Steady-state sync:
 
-1. Apply the action optimistically.
-2. POST the append command.
-3. Reconcile with the committed event from the server.
-4. If the server returns `409`, refresh the snapshot, backfill, and retry once.
+1. fetch snapshot
+2. subscribe to `/stream`
+3. apply optimistic change locally
+4. POST append command
+5. receive committed event over SSE
+6. clear optimistic overlay
+
+Conflict path:
+
+1. server returns `409`
+2. client refetches snapshot
+3. client fetches events since the last known version
+4. client retries once with fresh state
+
+Reconnect path:
+
+1. stream disconnects
+2. client preserves `lastVersion`
+3. client calls `/events?since=<lastVersion>`
+4. client reapplies missed events
 
 ## Presence
 
-Presence is intentionally ephemeral:
+Presence is ephemeral by design.
 
-- stored in an in-memory project map
-- emitted over the same SSE channel as persisted events
-- removed after a short disconnect timeout
-- never written to Postgres
+Shipped behavior:
 
-That keeps "who is viewing" lightweight and disposable.
+- in-memory presence store for single-instance demos
+- Redis-backed presence store when `REDIS_URL` is configured
+- disconnect TTL before removal
+- SSE broadcast of full viewer snapshots
 
-## Undo and Redo
+Presence never goes to Postgres.
+
+## Stream Protection
+
+The SSE route now uses a bounded buffer:
+
+- chunks are queued before writing to the stream controller
+- when the controller is backpressured, writes pause
+- if the queue overflows, the stream is closed
+- the client is expected to recover through `/events?since=...`
+
+That keeps one slow consumer from creating unbounded memory pressure on the server.
+
+## Write Protection
+
+Both write routes are rate limited:
+
+- `POST /api/projects`
+- `POST /api/projects/:id/events`
+
+Shipped behavior:
+
+- in-memory fixed-window limiter by default
+- Redis-backed limiter when `REDIS_URL` is configured
+- `429` responses with `Retry-After`
+
+The defaults are intentionally generous for the demo path, but the protection is there for real traffic and scripted abuse.
+
+## Undo, Redo, and Activity
 
 Undo and redo are client-driven inversions:
 
-- `task.create` is undone by `task.delete`
-- `comment.create` is undone by `comment.delete`
-- updates are undone by reapplying the previous field values
+- `task.create` -> `task.delete`
+- `comment.create` -> `comment.delete`
+- updates -> inverse updates with previous field values
 
-The inverse event is appended like any other event, with `parentVersion` linking it to the version being reversed. The server does not need dedicated undo logic.
+The inverse is appended as a normal event with `parentVersion`.
 
-## Activity Feed
+The activity feed is another projection over recent events:
 
-The activity feed is just another projection over recent events:
+- load recent history from the log
+- format human-readable summaries
+- prepend new committed events as they arrive
 
-- load recent events from the event log
-- format them into human-readable entries
-- prepend new entries as committed events arrive
-
-No background worker or extra persistence layer is required.
+No extra persistence layer is needed.
 
 ## Handling the 2MB Constraint
 
-The take-home assumes project payloads may eventually exceed `2MB`.
+The take-home explicitly assumes projects may eventually exceed `2MB`.
 
-This architecture avoids retransmitting whole projects during steady-state collaboration:
+This architecture addresses that constraint directly:
 
-- initial load uses one snapshot
-- live updates are small events
-- reconnect uses version-based catch-up
-- future pagination and virtualization fit naturally on top
+- initial load ships a paged snapshot
+- steady-state sync ships small events
+- reconnect uses event catch-up instead of full project reloads
+- the UI mounts only a virtual window of loaded tasks
 
-That is the main architectural advantage over document-style CRUD sync.
+That is why event sourcing plus paged projections is a better fit than document-style CRUD sync.
 
 ## Current Tradeoffs
 
-- single-instance SSE fan-out; Redis is the next scale step
-- demo identity only; no real authentication yet
-- no offline replay queue in `v0.1.0`
-- no virtualized task list yet
-- presence is lost on restart by design
+- Auth is still demo-only.
+- Offline replay is still future work.
+- Redis-backed abstractions are shipped, but the automated suite still does not spin up multiple app instances to prove cross-node fanout end to end.
+- Event partitioning and snapshot caching are documented next steps, not shipped migrations.
 
 ## Verification Evidence
 
-The project is verified by:
+Verified in this repo by:
 
-- unit tests for replay, validation, config guards, history inversion, and activity formatting
-- integration tests for append ordering, snapshots, conflicts, and SSE fan-out
-- Playwright tests for two-tab sync, presence, undo/redo, dependency errors, comments, and keyboard shortcuts
+- unit tests for replay, validation, history inversion, pagination, presence, buffering, and rate limiting
+- integration tests for append ordering, snapshots, conflicts, SSE delivery, reconnect catch-up, and route limits
+- Playwright tests for two-tab sync, presence, undo/redo, dependency errors, comments, shortcut help, and large-list pagination
+- load probes in `load/` plus the large-project seed script in `scripts/`
