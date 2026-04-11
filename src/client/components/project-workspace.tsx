@@ -5,6 +5,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import type { Comment, Task, TaskStatus } from "../../shared/types";
 import { getOrCreateClientId, getStoredDisplayName, setStoredDisplayName } from "../identity";
 import { useProjectSync } from "../hooks/useProjectSync";
+import { VirtualTaskList } from "./virtual-task-list";
 
 const STATUS_OPTIONS: TaskStatus[] = [
   "todo",
@@ -43,6 +44,7 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskStatus, setTaskStatus] = useState<TaskStatus>("todo");
   const [taskDependencies, setTaskDependencies] = useState<string[]>([]);
+  const [dependencyQuery, setDependencyQuery] = useState("");
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
   const [showShortcuts, setShowShortcuts] = useState(false);
   const taskInputRef = useRef<HTMLInputElement | null>(null);
@@ -62,6 +64,29 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
   const commentsByTask = snapshot ? groupCommentsByTask(snapshot.comments) : new Map();
   const canMutate = Boolean(snapshot && clientId && normalizedDisplayName) && !sync.isMutating;
   const tasksById = new Map((snapshot?.tasks ?? []).map((task) => [task.id, task]));
+  const normalizedDependencyQuery = dependencyQuery.trim().toLowerCase();
+  const dependencyOptions = (() => {
+    if (!snapshot) {
+      return [];
+    }
+
+    const selectedTasks = taskDependencies
+      .map((dependencyId) => tasksById.get(dependencyId))
+      .filter((task): task is Task => Boolean(task));
+    const matchedTasks = snapshot.tasks.filter((task) => {
+      if (taskDependencies.includes(task.id)) {
+        return false;
+      }
+
+      if (!normalizedDependencyQuery) {
+        return true;
+      }
+
+      return task.title.toLowerCase().includes(normalizedDependencyQuery);
+    });
+
+    return [...new Map([...selectedTasks, ...matchedTasks].map((task) => [task.id, task])).values()].slice(0, 24);
+  })();
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -139,6 +164,7 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
       setTaskTitle("");
       setTaskStatus("todo");
       setTaskDependencies([]);
+      setDependencyQuery("");
     } catch {
       // error is surfaced by the hook state
     }
@@ -196,7 +222,7 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
           <h1>{snapshot?.project.name ?? "Loading project..."}</h1>
           <p className="subtle-copy">
             {snapshot
-              ? `${snapshot.tasks.length} tasks · version ${snapshot.version}`
+              ? `${sync.totalTaskCount} tasks · ${snapshot.tasks.length} loaded · version ${snapshot.version}`
               : "Fetching snapshot and stream..."}
           </p>
 
@@ -300,8 +326,19 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
             {snapshot?.tasks.length ? (
               <div className="dependency-selector">
                 <span className="field-label">Dependencies</span>
+                <input
+                  className="text-input"
+                  onChange={(event) => setDependencyQuery(event.target.value)}
+                  placeholder="Filter loaded tasks"
+                  value={dependencyQuery}
+                />
+                {snapshot.tasks.length > dependencyOptions.length ? (
+                  <p className="subtle-copy">
+                    Showing {dependencyOptions.length} of {snapshot.tasks.length} loaded tasks.
+                  </p>
+                ) : null}
                 <div className="dependency-options">
-                  {snapshot.tasks.map((task) => (
+                  {dependencyOptions.map((task) => (
                     <label className="dependency-option" key={task.id}>
                       <input
                         aria-label={`Depends on ${task.title}`}
@@ -328,78 +365,87 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
               <div className="panel">
                 <p className="subtle-copy">Waiting for the initial snapshot.</p>
               </div>
-            ) : snapshot.tasks.length === 0 ? (
-              <div className="panel">
-                <p className="subtle-copy">
-                  No tasks yet. Add one above, then open the same page in another tab to
-                  watch it appear over the event stream.
-                </p>
-              </div>
             ) : (
-              snapshot.tasks.map((task) => (
-                <article className="task-card" key={task.id}>
-                  <div className="task-card-header">
-                    <div>
-                      <h2>{task.title}</h2>
-                      <p className="subtle-copy">Task {task.id.slice(0, 8)}</p>
-                      {task.dependencies.length > 0 ? (
-                        <p className="dependency-copy">
-                          Depends on:{" "}
-                          {task.dependencies
-                            .map((dependencyId) => tasksById.get(dependencyId)?.title ?? dependencyId)
-                            .join(", ")}
-                        </p>
-                      ) : null}
+              <VirtualTaskList
+                className="task-list-shell"
+                emptyState={(
+                  <div className="panel">
+                    <p className="subtle-copy">
+                      No tasks yet. Add one above, then open the same page in another tab to
+                      watch it appear over the event stream.
+                    </p>
+                  </div>
+                )}
+                getKey={(task) => task.id}
+                hasMore={sync.hasMoreTasks}
+                isLoadingMore={sync.isLoadingMoreTasks}
+                items={snapshot.tasks}
+                onLoadMore={sync.loadMoreTasks}
+                renderItem={(task) => (
+                  <article className="task-card">
+                    <div className="task-card-header">
+                      <div>
+                        <h2>{task.title}</h2>
+                        <p className="subtle-copy">Task {task.id.slice(0, 8)}</p>
+                        {task.dependencies.length > 0 ? (
+                          <p className="dependency-copy">
+                            Depends on:{" "}
+                            {task.dependencies
+                              .map((dependencyId) => tasksById.get(dependencyId)?.title ?? dependencyId)
+                              .join(", ")}
+                          </p>
+                        ) : null}
+                      </div>
+
+                      <button
+                        className="status-button"
+                        disabled={!canMutate}
+                        onClick={() => {
+                          void handleStatusAdvance(task);
+                        }}
+                        type="button"
+                      >
+                        {task.status}
+                      </button>
                     </div>
 
-                    <button
-                      className="status-button"
-                      disabled={!canMutate}
-                      onClick={() => {
-                        void handleStatusAdvance(task);
-                      }}
-                      type="button"
-                    >
-                      {task.status}
-                    </button>
-                  </div>
+                    <div className="comment-list">
+                      {(commentsByTask.get(task.id) ?? []).map((comment: Comment) => (
+                        <div className="comment-item" key={comment.id}>
+                          <strong>{comment.author}</strong>
+                          <p>{comment.content}</p>
+                        </div>
+                      ))}
+                    </div>
 
-                  <div className="comment-list">
-                    {(commentsByTask.get(task.id) ?? []).map((comment: Comment) => (
-                      <div className="comment-item" key={comment.id}>
-                        <strong>{comment.author}</strong>
-                        <p>{comment.content}</p>
-                      </div>
-                    ))}
-                  </div>
+                    <div className="comment-composer">
+                      <input
+                        className="text-input"
+                        disabled={!canMutate}
+                        onChange={(event) =>
+                          setCommentDrafts((current) => ({
+                            ...current,
+                            [task.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="Add a comment with @mentions"
+                        value={commentDrafts[task.id] ?? ""}
+                      />
 
-                  <div className="comment-composer">
-                    <input
-                      className="text-input"
-                      disabled={!canMutate}
-                      onChange={(event) =>
-                        setCommentDrafts((current) => ({
-                          ...current,
-                          [task.id]: event.target.value,
-                        }))
-                      }
-                      placeholder="Add a comment with @mentions"
-                      value={commentDrafts[task.id] ?? ""}
-                    />
-
-                    <button
-                      className="secondary-button"
-                      disabled={!canMutate}
-                      onClick={() => {
-                        void handleCommentSubmit(task.id);
-                      }}
-                      type="button"
-                    >
-                      Comment
-                    </button>
-                  </div>
-                </article>
-              ))
+                      <button
+                        className="secondary-button"
+                        disabled={!canMutate}
+                        onClick={() => {
+                          void handleCommentSubmit(task.id);
+                        }}
+                        type="button"
+                      >
+                        Comment
+                      </button>
+                    </div>
+                  </article>
+                )}
+              />
             )}
           </section>
         </div>

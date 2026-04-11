@@ -1,5 +1,7 @@
 import { expect, test, type Browser } from "@playwright/test";
 
+import { appendEvent } from "../../src/server/events/event-store";
+
 const baseTimestamp = 1_716_000_000_000;
 
 async function createIdentityContext(
@@ -16,6 +18,46 @@ async function createIdentityContext(
   }, identity);
 
   return context;
+}
+
+async function seedTaskRange(
+  projectId: string,
+  options: {
+    count: number;
+    clientId: string;
+    userId: string;
+    startingVersion?: number;
+    startingTimestamp?: number;
+  },
+) {
+  let expectedVersion = options.startingVersion ?? 1;
+  let timestamp = options.startingTimestamp ?? baseTimestamp + 1_000;
+
+  for (let index = 1; index <= options.count; index += 1) {
+    const taskId = `task_seed_${projectId}_${index}`;
+
+    await appendEvent({
+      id: `evt_seed_task_${projectId}_${index}`,
+      projectId,
+      entityId: taskId,
+      clientId: options.clientId,
+      userId: options.userId,
+      timestamp,
+      expectedVersion,
+      action: {
+        type: "task.create",
+        data: {
+          title: `Seed task ${index}`,
+          status: "todo",
+          projectId,
+          position: index,
+        },
+      },
+    });
+
+    expectedVersion += 1;
+    timestamp += 1;
+  }
 }
 
 test("two project pages converge when a task is appended through the API", async ({
@@ -228,4 +270,57 @@ test("dependencies, blocked transitions, comments, and shortcut help are visible
 
   await aliceContext.close();
   await bobContext.close();
+});
+
+test("large task lists stay windowed and can load the next page", async ({
+  browser,
+  request,
+}) => {
+  const createProjectResponse = await request.post("/api/projects", {
+    data: {
+      name: "Virtualized Demo",
+      clientId: "client_alice",
+      userId: "alice",
+    },
+  });
+
+  expect(createProjectResponse.ok()).toBeTruthy();
+  const { projectId } = (await createProjectResponse.json()) as { projectId: string };
+
+  await seedTaskRange(projectId, {
+    count: 130,
+    clientId: "client_alice",
+    userId: "alice",
+  });
+
+  const aliceContext = await createIdentityContext(browser, {
+    clientId: "client_alice",
+    displayName: "alice",
+  });
+  const alicePage = await aliceContext.newPage();
+
+  await alicePage.goto(`/projects/${projectId}`);
+
+  await expect(alicePage.locator(".status-pill")).toHaveText("connected");
+  await expect(alicePage.getByText("130 tasks")).toBeVisible();
+
+  await expect
+    .poll(async () => alicePage.locator(".task-card").count())
+    .toBeLessThanOrEqual(16);
+
+  await expect(alicePage.getByRole("heading", { name: "Seed task 1" })).toBeVisible();
+  await expect(alicePage.getByRole("heading", { name: "Seed task 130" })).toHaveCount(0);
+
+  await alicePage.getByRole("button", { name: "Load more tasks" }).click();
+  await alicePage.getByLabel("Task list").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll"));
+  });
+
+  await expect(alicePage.getByRole("heading", { name: "Seed task 130" })).toBeVisible();
+  await expect
+    .poll(async () => alicePage.locator(".task-card").count())
+    .toBeLessThanOrEqual(16);
+
+  await aliceContext.close();
 });

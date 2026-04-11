@@ -318,10 +318,38 @@ select {
   min-width: 0;
 }
 
-.task-grid {
+.task-grid,
+.task-list-shell,
+.task-list-window,
+.task-list-footer {
   display: grid;
   gap: 16px;
+}
+
+.task-grid {
   margin-top: 20px;
+}
+
+.task-list-viewport {
+  min-height: 160px;
+}
+
+.task-list-viewport.is-windowed {
+  max-height: min(72vh, 860px);
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.task-list-window {
+  align-content: start;
+}
+
+.task-list-spacer {
+  width: 100%;
+}
+
+.task-list-footer {
+  justify-items: center;
 }
 
 .task-card {
