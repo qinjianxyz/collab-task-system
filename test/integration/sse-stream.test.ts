@@ -187,6 +187,121 @@ describe("project SSE stream", () => {
     },
     10_000,
   );
+
+  it("recovers missed events after a disconnect via the events-since API", async () => {
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { GET: openStream } = await import(
+      "../../app/api/projects/[projectId]/stream/route"
+    );
+    const { POST: appendProjectEvent, GET: getEventsSince } = await import(
+      "../../app/api/projects/[projectId]/events/route"
+    );
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Reconnect",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+    const { projectId } = await createResponse.json();
+
+    const abortController = new AbortController();
+    const streamResponse = await openStream(
+      new Request(`${BASE_URL}/api/projects/${projectId}/stream`, {
+        signal: abortController.signal,
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+    const reader = streamResponse.body!.getReader();
+
+    await readChunk(reader);
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_reconnect_1",
+        entityId: "task_reconnect_1",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_100,
+        expectedVersion: 1,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Reconnect 1",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    const firstEventChunk = await readChunk(reader);
+    expect(firstEventChunk).toContain("\"id\":\"evt_reconnect_1\"");
+
+    abortController.abort();
+    await reader.cancel();
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_reconnect_2",
+        entityId: "task_reconnect_2",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_101,
+        expectedVersion: 2,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Reconnect 2",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_reconnect_3",
+        entityId: "task_reconnect_3",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_102,
+        expectedVersion: 3,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Reconnect 3",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    const recoveryResponse = await getEventsSince(
+      new Request(`${BASE_URL}/api/projects/${projectId}/events?since=2`),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(recoveryResponse.status).toBe(200);
+    const recoveryPayload = await recoveryResponse.json();
+    expect(recoveryPayload.events.map((event: ProjectEvent) => event.version)).toEqual([3, 4]);
+  });
 });
 
 describe("project event bus", () => {

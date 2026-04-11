@@ -3,6 +3,7 @@ import type { NextResponse } from "next/server";
 import { getProjectVersion } from "../../../../../src/server/events/event-store";
 import { subscribeToProjectEvents } from "../../../../../src/server/realtime/project-stream";
 import { getPresenceStore } from "../../../../../src/server/realtime/presence";
+import { StreamBuffer } from "../../../../../src/server/realtime/stream-buffer";
 import type { PresenceViewer } from "../../../../../src/shared/types";
 
 export const runtime = "nodejs";
@@ -45,6 +46,7 @@ export async function GET(
   let unsubscribePresence: () => void = () => undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let isClosed = false;
+  let streamBuffer: StreamBuffer<Uint8Array> | undefined;
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -59,6 +61,9 @@ export async function GET(
           clearInterval(heartbeat);
           heartbeat = undefined;
         }
+
+        streamBuffer?.close();
+        streamBuffer = undefined;
 
         unsubscribe();
         unsubscribe = () => undefined;
@@ -81,12 +86,31 @@ export async function GET(
           return;
         }
 
-        try {
-          controller.enqueue(encodeSse(eventName, data));
-        } catch {
-          close();
-        }
+        streamBuffer?.push(encodeSse(eventName, data));
       };
+
+      streamBuffer = new StreamBuffer<Uint8Array>({
+        maxSize: Number(process.env.SSE_BUFFER_LIMIT ?? "64"),
+        onOverflow: close,
+        onWrite: (chunk) => {
+          if (isClosed) {
+            return true;
+          }
+
+          const desiredSize = controller.desiredSize;
+          if (desiredSize !== null && desiredSize <= 0) {
+            return false;
+          }
+
+          try {
+            controller.enqueue(chunk);
+            return true;
+          } catch {
+            close();
+            return true;
+          }
+        },
+      });
 
       const initialize = async () => {
         enqueue("version", { version });
@@ -127,6 +151,9 @@ export async function GET(
         clearInterval(heartbeat);
         heartbeat = undefined;
       }
+
+      streamBuffer?.close();
+      streamBuffer = undefined;
 
       unsubscribe();
       unsubscribe = () => undefined;
