@@ -1,103 +1,120 @@
-# Slide Outline
+# Demo Visual Reference
 
-Use this if you want a light slide deck before or between the live product segments.
+Use this as a one-screen visual cheat sheet after the live product demo.
 
-## Slide 1: Title
+## Product Thesis
 
-Content:
+```text
+Collab Task System
+event-sourced collaborative task management
+two browser contexts, sub-second sync, no managed realtime database
+```
 
-- Collab Task System
-- Event-sourced collaborative task management
-- Two tabs, sub-second sync, no managed real-time database
+Presenter prompt:
 
-Speaker note:
+- “The point is not CRUD plus realtime. The point is one ordered event stream driving state, sync, history, and collaboration.”
 
-“This project is an OSS reference implementation of collaborative task management built on an append-only event log.”
+## Core Architecture
 
-## Slide 2: Problem
+```text
+client action
+    |
+    v
+POST /events
+    |
+    v
+validate -> append event -> apply projection -> commit
+    |
+    +--> Postgres event log remains source of truth
+    +--> projection tables serve snapshots and validation
+    +--> committed event is published to the project event bus
+    |
+    v
+SSE stream fanout
+    |
+    v
+all connected clients converge
+```
 
-Content:
+Presenter prompt:
 
-- real-time collaboration across clients
-- consistency without a managed realtime DB
-- future-proof for large project payloads
+- “The architectural bet is transactional append plus projection, then event fanout.”
 
-Speaker note:
+## Sync Sequence
 
-“The key challenge is not basic CRUD. It is efficient, correct synchronization as projects grow.”
+```text
+Client A                  Server                    Client B
+  | optimistic apply        |                          |
+  | POST /events            |                          |
+  |------------------------>| append + project in tx  |
+  |                         | publish event           |
+  |                         |------------------------>|
+  |<------------------------| committed response      |
+  | clear optimistic state  |          SSE update -> apply
+```
 
-## Slide 3: Thesis
+Presenter prompt:
 
-Content:
+- “The other client does not poll or refetch the whole project. It applies the committed event.”
 
-- one ordered event stream per project
-- transactional projections
-- SSE fanout
-- optimistic concurrency
+## Domain Correctness
 
-Speaker note:
+```text
+dependency DAG
+  Fix auth  ---->  Ship dashboard
 
-“Everything important derives from the event stream: state, sync, activity, and undo.”
+attempt invalid transition:
+  Ship dashboard -> in_progress
+  while Fix auth != done
 
-## Slide 4: Live Demo Highlights
+result:
+  server rejects append with 422
+  UI shows blocked transition message
+```
 
-Content:
+Presenter prompt:
 
-- two-browser task sync
-- live comments
-- presence
-- undo/redo
+- “This rule is enforced at append time, so invalid state never becomes durable.”
 
-Speaker note:
+## Scale Path
 
-“The product demo proves near real-time convergence between clients without full project reloads.”
+```text
+first load:
+  paged snapshot -> first task window
 
-## Slide 5: Domain Correctness
+scroll:
+  cursor-based /tasks page fetches
 
-Content:
+render:
+  virtualized visible rows only
 
-- dependency DAG validation
-- blocked status transitions
-- conflict detection with `expectedVersion`
+reconnect:
+  /events?since=lastVersion
+```
 
-Speaker note:
+Presenter prompt:
 
-“The server enforces the domain model at append time, so invalid state never becomes durable.”
+- “The 2MB problem is solved by changing the sync unit from full project payloads to windows and events.”
 
-## Slide 6: Scale Path
+## Measured Results
 
-Content:
+| Scenario | Result |
+| --- | --- |
+| `10,000` task seed | `209,839ms` |
+| append throughput | `177.5 req/s`, `56.06ms p95` |
+| paged initial load | `155.35ms p95` |
+| reconnect catch-up | `44.47ms p95` |
+| SSE fanout | `25` listeners, `115.16ms p95` |
 
-- paged snapshots
-- cursor pagination
-- virtualized task list
-- bounded SSE buffers
-- Redis-backed fanout and rate limiting
+Presenter prompt:
 
-Speaker note:
+- “The repo includes runnable seed and load artifacts, so the scale claims are measured, not just asserted.”
 
-“The architecture is designed around the take-home’s 2MB-plus constraint from the start.”
+## Q&A Anchors
 
-## Slide 7: OSS Quality
+If someone asks where to drill deeper:
 
-Content:
-
-- migrations and Docker setup
-- unit, integration, and Playwright e2e coverage
-- OpenAPI and architecture docs
-
-Speaker note:
-
-“This is not just a demo. It is packaged as a credible OSS project.”
-
-## Slide 8: Tradeoffs
-
-Content:
-
-- demo identity, no production auth
-- presence is ephemeral
-- full multi-app-node cluster automation is future work
-
-Speaker note:
-
-“The repo is honest about current tradeoffs while still proving the core architecture.”
+- thesis and top-level system picture -> [README.md](../../README.md)
+- write path and reconnect behavior -> [architecture.md](../architecture.md)
+- 2MB constraint and performance proof -> [scaling.md](../scaling.md)
+- route contracts -> [api.md](../api.md)

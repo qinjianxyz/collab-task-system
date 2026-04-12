@@ -44,6 +44,7 @@ Say:
 Then scroll briefly to:
 
 - `What You'll See`
+- `Architecture At A Glance`
 - `Scale Proof`
 
 Say:
@@ -132,6 +133,11 @@ Then open:
 
 - [scaling.md](../scaling.md)
 
+Point briefly at:
+
+- `Scale Posture At A Glance`
+- `Results Table`
+
 Say:
 
 “The take-home assumes projects can eventually exceed two megabytes. This system handles that by shipping paged snapshots, cursor-based task windows, virtualized rendering, and reconnect catch-up through incremental events instead of full document reloads.”
@@ -146,7 +152,13 @@ Open:
 
 - [architecture.md](../architecture.md)
 
-Point to the write path and say:
+Point to:
+
+- `Architecture In One Picture`
+- `Write Path`
+- `Reconnect And Catch-Up`
+
+Then say:
 
 “The write path is: optimistic client action, `POST /events`, append plus projection in one SQL transaction, then publish the committed event to the project event bus and fan it out over SSE.”
 

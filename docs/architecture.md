@@ -16,6 +16,41 @@ The same event history drives:
 
 That is the architectural difference from a CRUD app with realtime bolted on later.
 
+## Architecture In One Picture
+
+```text
+                       durable path
+
+  user intent
+      |
+      v
+  client command
+      |
+      v
+  POST /api/projects/:id/events
+      |
+      v
+  appendEvent()
+      |
+      +--> validate schema
+      +--> lock project row
+      +--> check expectedVersion
+      +--> validate dependency rules
+      +--> insert event
+      +--> apply projection
+      +--> bump current_version
+      |
+      v
+  commit
+      |
+      +--> events table remains source of truth
+      +--> projection tables serve reads
+      +--> event bus publishes committed event
+      |
+      v
+  SSE stream updates connected clients
+```
+
 ## System Diagram
 
 ```text
@@ -41,6 +76,21 @@ Browser A / Browser B
   | heartbeat
         v
  Connected clients
+```
+
+## Projection Model
+
+```text
+                one ordered event log per project
+
+  events
+    |
+    +--> projects projection  -> project metadata + current_version
+    +--> tasks projection     -> status, assignees, dependencies, position
+    +--> comments projection  -> task thread state + mentions
+    +--> activity projection  -> human-readable recent history
+    +--> client replay        -> optimistic merge, undo/redo, catch-up
+    +--> presence layer       -> ephemeral viewer snapshots over SSE
 ```
 
 ## Event Model
@@ -91,6 +141,24 @@ If projection application fails, the event does not commit.
 
 ## Write Path
 
+```text
+Client                    API route / event store                Postgres
+  |                                 |                               |
+  | append command                  |                               |
+  |-------------------------------->|                               |
+  |                                 | parse + validate             |
+  |                                 | lock project row             |
+  |                                 | compare expectedVersion      |
+  |                                 | validate DAG / transitions   |
+  |                                 | insert event                 |
+  |                                 | apply projection changes     |
+  |                                 | update current_version       |
+  |                                 | commit --------------------->|
+  |                                 | publish committed event      |
+  |<--------------------------------|                               |
+  | receive committed version       |                               |
+```
+
 1. Parse the append command with shared Zod schemas.
 2. Reject ephemeral mutations such as durable `presence.update`.
 3. Lock the target project row.
@@ -106,6 +174,26 @@ The bus selects:
 
 - in-memory `EventEmitter` for single-instance demos
 - Redis pub/sub when `REDIS_URL` is configured
+
+## Conflict Recovery
+
+```text
+Client                             Server
+  | optimistic apply                 |
+  | POST /events expectedVersion=7   |
+  |--------------------------------->|
+  |                                  | current_version = 8
+  |                                  | reject with 409
+  |<---------------------------------|
+  | refetch snapshot                 |
+  | GET /snapshot                    |
+  |--------------------------------->|
+  |<---------------------------------|
+  | GET /events?since=7              |
+  |--------------------------------->|
+  |<---------------------------------|
+  | retry with expectedVersion=8     |
+```
 
 ## Read Path
 
@@ -130,6 +218,14 @@ Render path:
 - dependency selection is capped to a filtered subset of loaded tasks so the form does not recreate the large-list problem
 
 ## Sync Path
+
+```text
+cold start
+  snapshot -> stream subscribe -> steady-state events
+
+steady state
+  optimistic apply -> POST append -> committed SSE event -> converge
+```
 
 The client hook keeps:
 
@@ -162,6 +258,22 @@ Reconnect path:
 3. client calls `/events?since=<lastVersion>`
 4. client reapplies missed events
 
+## Reconnect And Catch-Up
+
+```text
+Client                          Server
+  | stream drops                  |
+  | preserve lastVersion=412      |
+  | GET /events?since=412         |
+  |------------------------------>|
+  |<------------------------------|
+  | apply missed events           |
+  | reconnect /stream             |
+  |------------------------------>|
+  |<------------------------------|
+  | receive fresh live events     |
+```
+
 ## Presence
 
 Presence is ephemeral by design.
@@ -176,6 +288,14 @@ Shipped behavior:
 Presence never goes to Postgres.
 
 ## Stream Protection
+
+```text
+event bus -> per-connection queue -> stream controller -> browser
+                 |
+                 +--> if queue exceeds SSE_BUFFER_LIMIT:
+                      close stream
+                      let client recover through catch-up
+```
 
 The SSE route now uses a bounded buffer:
 
@@ -221,6 +341,13 @@ No extra persistence layer is needed.
 
 ## Handling the 2MB Constraint
 
+```text
+first view:   paged snapshot (project + first task window)
+steady state: small project events
+reconnect:    events since lastVersion
+render:       virtualized visible task cards only
+```
+
 The take-home explicitly assumes projects may eventually exceed `2MB`.
 
 This architecture addresses that constraint directly:
@@ -247,3 +374,11 @@ Verified in this repo by:
 - integration tests for append ordering, snapshots, conflicts, SSE delivery, reconnect catch-up, and route limits
 - Playwright tests for two-tab sync, presence, undo/redo, dependency errors, comments, shortcut help, and large-list pagination
 - load probes in `load/` plus the large-project seed script in `scripts/`
+
+## Questions This Doc Answers
+
+- Why does event sourcing help here instead of just adding websockets to CRUD?
+- How do we keep state and history consistent across clients?
+- Where are conflicts detected and resolved?
+- How do reconnects avoid reloading a multi-megabyte project?
+- What protects the stream and write path under load?

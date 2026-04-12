@@ -5,7 +5,7 @@ Use this folder for the evaluator recording and any live walkthroughs.
 ## Files
 
 - [video-script.md](./video-script.md): near-verbatim 5-minute narration
-- [slides.md](./slides.md): lightweight slide outline with speaker notes
+- [slides.md](./slides.md): compact visual reference with architecture and scale charts
 - [runbook.md](./runbook.md): operator checklist, prep commands, and fallback steps
 
 ## Recommended Recording Flow
@@ -21,6 +21,7 @@ Use this folder for the evaluator recording and any live walkthroughs.
 - [README.md](../../README.md)
 - [architecture.md](../architecture.md)
 - [scaling.md](../scaling.md)
+- [slides.md](./slides.md)
 - [api.md](../api.md)
 
 ## Timing Map
@@ -42,3 +43,12 @@ This is an event-sourced collaborative system where:
 - projections derive current state
 - SSE distributes committed events
 - undo/redo, activity, and sync all ride the same model
+
+## Presentation Strategy
+
+Use the docs in this order:
+
+1. [README.md](../../README.md) for the product thesis and top-level system picture
+2. [architecture.md](../architecture.md) for the write path, conflict handling, and reconnect story
+3. [scaling.md](../scaling.md) for the 2MB constraint and large-list proof
+4. [slides.md](./slides.md) as a compact visual fallback if you need one screen with the core diagrams

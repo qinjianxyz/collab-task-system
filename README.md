@@ -40,6 +40,44 @@ The packaged stack includes:
 - optimistic updates with `409` conflict recovery
 - paged, virtualized task rendering for large projects
 
+## Architecture At A Glance
+
+```text
+                                append-only truth
+
+  Browser A              Next.js API              PostgreSQL
+  Browser B  ----->   validate command   ----->   events table
+      |               lock project row           projections
+      |               check expectedVersion      current_version
+      |               apply projection
+      |               commit event + version
+      |                        |
+      |                        v
+      |                 Project event bus
+      |              (Redis or in-memory fallback)
+      |                        |
+      +------ SSE stream <-----+
+                 |
+                 v
+        all connected clients converge
+```
+
+## Sync In One Picture
+
+```text
+Client A                    Server                     Client B
+   | optimistic apply         |                           |
+   | POST /events             |                           |
+   |------------------------->| validate + append +       |
+   |                          | project in one tx         |
+   |                          | publish committed event   |
+   |                          |-------------------------->|
+   |                          |      SSE project-event    |
+   |<-------------------------|                           |
+   | clear optimistic state   |                           |
+   |                          |              apply event, update UI
+```
+
 ## Why This Repo Exists
 
 This project is an OSS reference implementation for an event-sourced collaborative app.
@@ -50,6 +88,17 @@ The point is not just “task CRUD with realtime.” The point is that:
 - projections derive current state, activity, and sync behavior
 - reconnect and scale paths avoid resending full project payloads
 - undo/redo is ordinary event inversion, not a bolt-on subsystem
+
+## Why Event Sourcing Instead Of CRUD?
+
+| Concern | CRUD-first design | This repo |
+| --- | --- | --- |
+| real-time sync | push full records or poll for diffs | stream committed events over SSE |
+| undo/redo | separate history subsystem | inverse event appended to the same log |
+| activity feed | custom audit path | projection over recent events |
+| reconnect | refetch whole project | `events?since=N` catch-up |
+| large projects | big payload churn | paged snapshot plus small events |
+| conflict handling | last write wins or ad hoc merges | `expectedVersion` and `409` retry |
 
 ## Scale Proof
 
@@ -94,6 +143,12 @@ SSE stream
   v
 Connected clients
 ```
+
+The deeper presentation docs are designed to be shown on screen after the live demo:
+
+- [docs/architecture.md](./docs/architecture.md): write path, projection model, reconnect, and failure handling
+- [docs/scaling.md](./docs/scaling.md): read-path strategy, task windowing, virtualization, and measured results
+- [docs/demo/slides.md](./docs/demo/slides.md): compact visual reference for the Q&A segment
 
 Further reading:
 

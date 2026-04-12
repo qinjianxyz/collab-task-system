@@ -6,7 +6,7 @@ Use:
 
 - [demo/README.md](./demo/README.md) for the overview
 - [demo/video-script.md](./demo/video-script.md) for the full 5-minute narration
-- [demo/slides.md](./demo/slides.md) for the slide outline
+- [demo/slides.md](./demo/slides.md) for the compact visual reference
 - [demo/runbook.md](./demo/runbook.md) for setup, commands, and fallback steps
 
 If you only need the short walkthrough order:
