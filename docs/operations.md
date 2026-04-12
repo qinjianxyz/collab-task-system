@@ -119,4 +119,4 @@ bun scripts/seed-large-project.ts
 
 - Presence is still ephemeral and not durable.
 - Auth is still demo-only.
-- Redis-backed abstractions are shipped, but the automated suite still runs a single app process rather than a multi-node cluster.
+- Redis-backed abstractions are now exercised in automation through independent Redis-backed instances, but the suite still does not run a full multi-app-node cluster behind shared Redis.

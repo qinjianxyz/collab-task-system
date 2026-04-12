@@ -32,7 +32,10 @@ export class InMemoryProjectEventBus implements ProjectEventBus {
     getEmitter().emit(channel(event.projectId), event);
   }
 
-  subscribe(projectId: string, listener: ProjectEventListener): () => void {
+  async subscribe(
+    projectId: string,
+    listener: ProjectEventListener,
+  ): Promise<() => void> {
     const emitter = getEmitter();
     const projectChannel = channel(projectId);
     emitter.on(projectChannel, listener);

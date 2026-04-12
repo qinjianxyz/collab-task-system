@@ -17,7 +17,10 @@ type PresenceListener = (viewers: PresenceViewer[]) => void;
 export interface PresenceStore {
   getViewers: (projectId: string) => Promise<PresenceViewer[]>;
   scheduleRemoval: (projectId: string, clientId: string) => void;
-  subscribe: (projectId: string, listener: PresenceListener) => () => void;
+  subscribe: (
+    projectId: string,
+    listener: PresenceListener,
+  ) => Promise<() => void>;
   upsertViewer: (projectId: string, viewer: PresenceViewer) => Promise<void>;
 }
 
@@ -109,7 +112,10 @@ export class InMemoryPresenceStore implements PresenceStore {
     );
   }
 
-  subscribe(projectId: string, listener: PresenceListener): () => void {
+  async subscribe(
+    projectId: string,
+    listener: PresenceListener,
+  ): Promise<() => void> {
     const channel = presenceChannel(projectId);
     this.emitter.on(channel, listener);
 
@@ -231,13 +237,16 @@ export class RedisPresenceStore implements PresenceStore {
     );
   }
 
-  subscribe(projectId: string, listener: PresenceListener): () => void {
+  async subscribe(
+    projectId: string,
+    listener: PresenceListener,
+  ): Promise<() => void> {
     const channel = presenceChannel(projectId);
     const listeners = this.listenersByChannel.get(channel) ?? new Set();
     listeners.add(listener);
     this.listenersByChannel.set(channel, listeners);
 
-    void this.ensureSubscribed(channel);
+    await this.ensureSubscribed(channel);
 
     return () => {
       const currentListeners = this.listenersByChannel.get(channel);
@@ -411,12 +420,15 @@ export class ResilientRedisPresenceStore extends RedisPresenceStore {
     this.fallback.scheduleRemoval(projectId, clientId);
   }
 
-  subscribe(projectId: string, listener: PresenceListener): () => void {
-    const unsubscribeFallback = this.fallback.subscribe(projectId, listener);
+  async subscribe(
+    projectId: string,
+    listener: PresenceListener,
+  ): Promise<() => void> {
+    const unsubscribeFallback = await this.fallback.subscribe(projectId, listener);
     let unsubscribePrimary: () => void = () => undefined;
 
     try {
-      unsubscribePrimary = super.subscribe(projectId, listener);
+      unsubscribePrimary = await super.subscribe(projectId, listener);
     } catch {
       this.failedOpen = true;
     }

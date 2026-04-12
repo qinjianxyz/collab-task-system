@@ -32,13 +32,16 @@ export class RedisProjectEventBus implements ProjectEventBus {
       });
   }
 
-  subscribe(projectId: string, listener: ProjectEventListener): () => void {
+  async subscribe(
+    projectId: string,
+    listener: ProjectEventListener,
+  ): Promise<() => void> {
     const projectChannel = channel(projectId);
     const listeners = this.listenersByChannel.get(projectChannel) ?? new Set();
     listeners.add(listener);
     this.listenersByChannel.set(projectChannel, listeners);
 
-    void this.ensureSubscribed(projectChannel);
+    await this.ensureSubscribed(projectChannel);
 
     return () => {
       const currentListeners = this.listenersByChannel.get(projectChannel);

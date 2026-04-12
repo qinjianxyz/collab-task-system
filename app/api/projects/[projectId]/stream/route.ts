@@ -1,10 +1,13 @@
 import type { NextResponse } from "next/server";
 
-import { getProjectVersion } from "../../../../../src/server/events/event-store";
+import {
+  getEventsSince,
+  getProjectVersion,
+} from "../../../../../src/server/events/event-store";
 import { subscribeToProjectEvents } from "../../../../../src/server/realtime/project-stream";
 import { getPresenceStore } from "../../../../../src/server/realtime/presence";
 import { StreamBuffer } from "../../../../../src/server/realtime/stream-buffer";
-import type { PresenceViewer } from "../../../../../src/shared/types";
+import type { PresenceViewer, ProjectEvent } from "../../../../../src/shared/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,6 +50,9 @@ export async function GET(
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let isClosed = false;
   let streamBuffer: StreamBuffer<Uint8Array> | undefined;
+  let isInitializing = true;
+  const initializationEventIds = new Set<string>();
+  let lastPresencePayload: string | null = null;
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -89,6 +95,28 @@ export async function GET(
         streamBuffer?.push(encodeSse(eventName, data));
       };
 
+      const enqueueProjectEvent = (event: ProjectEvent) => {
+        if (isInitializing) {
+          if (initializationEventIds.has(event.id)) {
+            return;
+          }
+
+          initializationEventIds.add(event.id);
+        }
+
+        enqueue("project-event", { event });
+      };
+
+      const enqueuePresence = (viewers: PresenceViewer[]) => {
+        const payload = JSON.stringify(viewers);
+        if (payload === lastPresencePayload) {
+          return;
+        }
+
+        lastPresencePayload = payload;
+        enqueue("presence", { viewers });
+      };
+
       streamBuffer = new StreamBuffer<Uint8Array>({
         maxSize: Number(process.env.SSE_BUFFER_LIMIT ?? "64"),
         onOverflow: close,
@@ -113,20 +141,50 @@ export async function GET(
       });
 
       const initialize = async () => {
+        unsubscribe = await subscribeToProjectEvents(projectId, (event) => {
+          enqueueProjectEvent(event);
+        });
+        if (isClosed) {
+          unsubscribe();
+          unsubscribe = () => undefined;
+          return;
+        }
+
         enqueue("version", { version });
 
-        unsubscribe = subscribeToProjectEvents(projectId, (event) => {
-          enqueue("project-event", { event });
-        });
+        const catchUpEvents = await getEventsSince(projectId, version);
+        if (isClosed) {
+          return;
+        }
+
+        for (const event of catchUpEvents) {
+          enqueueProjectEvent(event);
+        }
+
+        isInitializing = false;
+        initializationEventIds.clear();
 
         if (viewer && presenceStore) {
+          unsubscribePresence = await presenceStore.subscribe(projectId, (viewers) => {
+            enqueuePresence(viewers);
+          });
+          if (isClosed) {
+            unsubscribePresence();
+            unsubscribePresence = () => undefined;
+            return;
+          }
+
           await presenceStore.upsertViewer(projectId, viewer);
-          enqueue("presence", {
-            viewers: await presenceStore.getViewers(projectId),
-          });
-          unsubscribePresence = presenceStore.subscribe(projectId, (viewers) => {
-            enqueue("presence", { viewers });
-          });
+          if (isClosed) {
+            presenceStore.scheduleRemoval(projectId, viewer.clientId);
+            return;
+          }
+
+          enqueuePresence(await presenceStore.getViewers(projectId));
+        }
+
+        if (isClosed) {
+          return;
         }
 
         heartbeat = setInterval(() => {
@@ -134,7 +192,9 @@ export async function GET(
         }, 15_000);
       };
 
-      void initialize();
+      void initialize().catch(() => {
+        close();
+      });
 
       request.signal.addEventListener(
         "abort",

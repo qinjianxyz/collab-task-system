@@ -236,7 +236,7 @@ That is why event sourcing plus paged projections is a better fit than document-
 
 - Auth is still demo-only.
 - Offline replay is still future work.
-- Redis-backed abstractions are shipped, but the automated suite still does not spin up multiple app instances to prove cross-node fanout end to end.
+- Redis-backed abstractions are exercised in automation through independent Redis-backed instances and stream-race coverage, but the suite still does not orchestrate multiple full app containers behind shared Redis.
 - Event partitioning and snapshot caching are documented next steps, not shipped migrations.
 
 ## Verification Evidence

@@ -8,9 +8,9 @@ export function publishProjectEvent(event: ProjectEvent): void {
   getProjectEventBus().publish(event);
 }
 
-export function subscribeToProjectEvents(
+export async function subscribeToProjectEvents(
   projectId: string,
   listener: ProjectEventListener,
-): () => void {
+): Promise<() => void> {
   return getProjectEventBus().subscribe(projectId, listener);
 }

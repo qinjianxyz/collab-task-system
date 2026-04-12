@@ -6,7 +6,10 @@ export type ProjectEventListener = (event: ProjectEvent) => void;
 
 export interface ProjectEventBus {
   publish: (event: ProjectEvent) => void;
-  subscribe: (projectId: string, listener: ProjectEventListener) => () => void;
+  subscribe: (
+    projectId: string,
+    listener: ProjectEventListener,
+  ) => Promise<() => void>;
 }
 
 type EventBusOptions = {
@@ -39,12 +42,15 @@ export class ResilientRedisProjectEventBus extends RedisProjectEventBus {
     }
   }
 
-  subscribe(projectId: string, listener: ProjectEventListener): () => void {
-    const unsubscribeFallback = this.fallback.subscribe(projectId, listener);
+  async subscribe(
+    projectId: string,
+    listener: ProjectEventListener,
+  ): Promise<() => void> {
+    const unsubscribeFallback = await this.fallback.subscribe(projectId, listener);
     let unsubscribeRedis: () => void = () => undefined;
 
     try {
-      unsubscribeRedis = super.subscribe(projectId, (event) => {
+      unsubscribeRedis = await super.subscribe(projectId, (event) => {
         if (this.wasRecentlyPublishedLocally(event.id)) {
           return;
         }
