@@ -99,6 +99,10 @@ Further reading:
 
 - [docs/architecture.md](./docs/architecture.md)
 - [docs/api.md](./docs/api.md)
+- [docs/demo/README.md](./docs/demo/README.md)
+- [docs/demo/video-script.md](./docs/demo/video-script.md)
+- [docs/demo/slides.md](./docs/demo/slides.md)
+- [docs/demo/runbook.md](./docs/demo/runbook.md)
 - [docs/demo-script.md](./docs/demo-script.md)
 - [docs/operations.md](./docs/operations.md)
 - [docs/scaling.md](./docs/scaling.md)
