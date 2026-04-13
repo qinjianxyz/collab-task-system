@@ -7,6 +7,7 @@ export type HistoryAction = {
 
 export type HistoryEntry = {
   targetVersion: number;
+  targetEntityVersion?: number;
   undoAction: HistoryAction;
   redoAction: HistoryAction;
 };
@@ -53,6 +54,7 @@ export function createHistoryEntry(
 
       return {
         targetVersion: committedEvent.version,
+        targetEntityVersion: committedEvent.entityVersion,
         undoAction: {
           entityId: committedEvent.entityId,
           action: undoAction,
@@ -66,6 +68,7 @@ export function createHistoryEntry(
     case "task.create":
       return {
         targetVersion: committedEvent.version,
+        targetEntityVersion: committedEvent.entityVersion,
         undoAction: {
           entityId: committedEvent.entityId,
           action: {
@@ -105,6 +108,7 @@ export function createHistoryEntry(
 
       return {
         targetVersion: committedEvent.version,
+        targetEntityVersion: committedEvent.entityVersion,
         undoAction: {
           entityId: committedEvent.entityId,
           action: {
@@ -126,6 +130,7 @@ export function createHistoryEntry(
 
       return {
         targetVersion: committedEvent.version,
+        targetEntityVersion: committedEvent.entityVersion,
         undoAction: {
           entityId: committedEvent.entityId,
           action: {
@@ -150,6 +155,7 @@ export function createHistoryEntry(
     case "comment.create":
       return {
         targetVersion: committedEvent.version,
+        targetEntityVersion: committedEvent.entityVersion,
         undoAction: {
           entityId: committedEvent.entityId,
           action: {
@@ -172,6 +178,7 @@ export function createHistoryEntry(
 
       return {
         targetVersion: committedEvent.version,
+        targetEntityVersion: committedEvent.entityVersion,
         undoAction: {
           entityId: committedEvent.entityId,
           action: {
@@ -197,6 +204,7 @@ export function createHistoryEntry(
 
       return {
         targetVersion: committedEvent.version,
+        targetEntityVersion: committedEvent.entityVersion,
         undoAction: {
           entityId: committedEvent.entityId,
           action: {

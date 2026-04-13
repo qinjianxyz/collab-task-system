@@ -25,6 +25,7 @@ type TaskRow = {
   configuration: Record<string, unknown> | null;
   dependencies: string[] | null;
   position: number;
+  entity_version: number;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -35,6 +36,7 @@ type CommentRow = {
   content: string;
   author: string;
   mentions: string[] | null;
+  entity_version: number;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -57,6 +59,7 @@ function toTask(row: TaskRow): Task {
     configuration: taskConfigSchema.parse(row.configuration ?? {}),
     dependencies: row.dependencies ?? [],
     position: row.position,
+    entityVersion: row.entity_version,
     createdAt: toTimestampMs(row.created_at),
     updatedAt: toTimestampMs(row.updated_at),
   };
@@ -69,6 +72,7 @@ function toComment(row: CommentRow): Comment {
     content: row.content,
     author: row.author,
     mentions: row.mentions ?? [],
+    entityVersion: row.entity_version,
     createdAt: toTimestampMs(row.created_at),
     updatedAt: toTimestampMs(row.updated_at),
   };
@@ -144,6 +148,7 @@ export async function readProjectTaskPage(
         configuration,
         dependencies,
         position,
+        entity_version,
         created_at,
         updated_at
       from tasks
@@ -173,6 +178,7 @@ export async function readProjectTaskPage(
             content,
             author,
             mentions,
+            entity_version,
             created_at,
             updated_at
           from comments

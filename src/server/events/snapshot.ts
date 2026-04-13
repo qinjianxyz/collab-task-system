@@ -33,6 +33,7 @@ type TaskRow = {
   configuration: Record<string, unknown>;
   dependencies: string[] | null;
   position: number;
+  entity_version: number;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -43,6 +44,7 @@ type CommentRow = {
   content: string;
   author: string;
   mentions: string[] | null;
+  entity_version: number;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -94,6 +96,7 @@ export async function getSnapshot(projectId: string): Promise<ProjectSnapshot> {
           configuration,
           dependencies,
           position,
+          entity_version,
           created_at,
           updated_at
         from tasks
@@ -109,6 +112,7 @@ export async function getSnapshot(projectId: string): Promise<ProjectSnapshot> {
           c.content,
           c.author,
           c.mentions,
+          c.entity_version,
           c.created_at,
           c.updated_at
         from comments c
@@ -144,6 +148,7 @@ export async function getSnapshot(projectId: string): Promise<ProjectSnapshot> {
     configuration: taskConfigSchema.parse(row.configuration ?? {}),
     dependencies: row.dependencies ?? [],
     position: row.position,
+    entityVersion: row.entity_version,
     createdAt: toTimestampMs(row.created_at),
     updatedAt: toTimestampMs(row.updated_at),
   }));
@@ -154,6 +159,7 @@ export async function getSnapshot(projectId: string): Promise<ProjectSnapshot> {
     content: row.content,
     author: row.author,
     mentions: row.mentions ?? [],
+    entityVersion: row.entity_version,
     createdAt: toTimestampMs(row.created_at),
     updatedAt: toTimestampMs(row.updated_at),
   }));

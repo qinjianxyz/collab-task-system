@@ -41,6 +41,7 @@ export const taskSchema = z.object({
   position: z.number(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
+  entityVersion: z.number().int().positive().optional(),
 });
 
 export const commentSchema = z.object({
@@ -51,6 +52,7 @@ export const commentSchema = z.object({
   mentions: z.array(z.string()).default([]),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
+  entityVersion: z.number().int().positive().optional(),
 });
 
 export const presenceCursorSchema = z.object({
@@ -192,10 +194,12 @@ const eventEnvelopeSchema = z.object({
 
 export const projectEventSchema = eventEnvelopeSchema.extend({
   version: z.number().int().positive(),
+  entityVersion: z.number().int().positive().optional(),
 });
 
 export const appendEventInputSchema = eventEnvelopeSchema.extend({
   expectedVersion: z.number().int().nonnegative(),
+  expectedEntityVersion: z.number().int().nonnegative().optional(),
 });
 
 export const projectSnapshotSchema = z.object({

@@ -104,6 +104,7 @@ export function applyProjectEvent(
         },
         dependencies: event.action.data.dependencies ?? [],
         position: event.action.data.position ?? event.version,
+        entityVersion: event.entityVersion ?? 1,
         createdAt: event.timestamp,
         updatedAt: event.timestamp,
       };
@@ -147,6 +148,7 @@ export function applyProjectEvent(
         ...(event.action.data.position !== undefined
           ? { position: event.action.data.position }
           : {}),
+        entityVersion: event.entityVersion ?? ((existingTask.entityVersion ?? 1) + 1),
         updatedAt: event.timestamp,
       };
 
@@ -180,6 +182,7 @@ export function applyProjectEvent(
         content: event.action.data.content,
         author: event.action.data.author,
         mentions: extractMentions(event.action.data.content),
+        entityVersion: event.entityVersion ?? 1,
         createdAt: event.timestamp,
         updatedAt: event.timestamp,
       };
@@ -217,6 +220,7 @@ export function applyProjectEvent(
                     ...existingComment,
                     content,
                     mentions: extractMentions(content),
+                    entityVersion: event.entityVersion ?? ((existingComment.entityVersion ?? 1) + 1),
                     updatedAt: event.timestamp,
                   }
                 : comment,
@@ -241,6 +245,30 @@ export function applyProjectEvent(
   }
 }
 
+function deriveOptimisticEntityVersion(
+  snapshot: ProjectSnapshot,
+  input: AppendEventInput,
+): number | undefined {
+  switch (input.action.type) {
+    case "task.create":
+      return 1;
+    case "task.update":
+    case "task.delete": {
+      const task = snapshot.tasks.find((t) => t.id === input.entityId);
+      return task ? ((task.entityVersion ?? 1) + 1) : undefined;
+    }
+    case "comment.create":
+      return 1;
+    case "comment.update":
+    case "comment.delete": {
+      const comment = snapshot.comments.find((c) => c.id === input.entityId);
+      return comment ? (comment.entityVersion ?? 1) + 1 : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 export function buildOptimisticEvent(
   snapshot: ProjectSnapshot,
   input: AppendEventInput,
@@ -251,6 +279,7 @@ export function buildOptimisticEvent(
     entityId: input.entityId,
     action: input.action,
     version: snapshot.version + 1,
+    entityVersion: deriveOptimisticEntityVersion(snapshot, input),
     clientId: input.clientId,
     userId: input.userId,
     timestamp: input.timestamp,

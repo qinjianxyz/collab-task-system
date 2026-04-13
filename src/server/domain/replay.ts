@@ -79,6 +79,7 @@ export function replayProjectEvents(events: ProjectEvent[]): ProjectSnapshot {
           },
           dependencies: event.action.data.dependencies ?? [],
           position: event.action.data.position ?? event.version,
+          entityVersion: event.entityVersion ?? 1,
           createdAt: event.timestamp,
           updatedAt: event.timestamp,
         });
@@ -109,6 +110,7 @@ export function replayProjectEvents(events: ProjectEvent[]): ProjectSnapshot {
           ...(event.action.data.position !== undefined
             ? { position: event.action.data.position }
             : {}),
+          entityVersion: event.entityVersion ?? ((task.entityVersion ?? 1) + 1),
           updatedAt: event.timestamp,
         });
         break;
@@ -123,6 +125,7 @@ export function replayProjectEvents(events: ProjectEvent[]): ProjectSnapshot {
           content: event.action.data.content,
           author: event.action.data.author,
           mentions: extractMentions(event.action.data.content),
+          entityVersion: event.entityVersion ?? 1,
           createdAt: event.timestamp,
           updatedAt: event.timestamp,
         });
@@ -139,6 +142,7 @@ export function replayProjectEvents(events: ProjectEvent[]): ProjectSnapshot {
           ...comment,
           content: event.action.data.content,
           mentions: extractMentions(event.action.data.content),
+          entityVersion: event.entityVersion ?? ((comment.entityVersion ?? 1) + 1),
           updatedAt: event.timestamp,
         });
         break;

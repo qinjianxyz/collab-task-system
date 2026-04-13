@@ -213,9 +213,10 @@ export async function applyEventProjection(
           configuration,
           dependencies,
           position,
+          entity_version,
           created_at,
           updated_at
-        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           event.entityId,
           event.projectId,
@@ -225,6 +226,7 @@ export async function applyEventProjection(
           event.action.data.configuration ?? {},
           event.action.data.dependencies ?? [],
           event.action.data.position ?? event.version,
+          event.entityVersion ?? 1,
           eventDate(event),
           eventDate(event),
         ],
@@ -251,6 +253,9 @@ export async function applyEventProjection(
             : {}),
           ...(event.action.data.position !== undefined
             ? { position: event.action.data.position }
+            : {}),
+          ...(event.entityVersion !== undefined
+            ? { entity_version: event.entityVersion }
             : {}),
           updated_at: eventDate(event),
         },
@@ -282,15 +287,17 @@ export async function applyEventProjection(
           content,
           author,
           mentions,
+          entity_version,
           created_at,
           updated_at
-        ) values ($1, $2, $3, $4, $5, $6, $7)`,
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           event.entityId,
           event.action.data.taskId,
           event.action.data.content,
           event.action.data.author,
           mentions,
+          event.entityVersion ?? 1,
           eventDate(event),
           eventDate(event),
         ],
@@ -301,14 +308,26 @@ export async function applyEventProjection(
     case "comment.update": {
       const mentions = extractMentions(event.action.data.content);
 
-      await client.query(
-        `update comments
+      const commentUpdateParams: unknown[] = [
+        event.action.data.content,
+        mentions,
+        eventDate(event),
+      ];
+
+      let commentUpdateSql = `update comments
             set content = $1,
                 mentions = $2,
-                updated_at = $3
-          where id = $4`,
-        [event.action.data.content, mentions, eventDate(event), event.entityId],
-      );
+                updated_at = $3`;
+
+      if (event.entityVersion !== undefined) {
+        commentUpdateParams.push(event.entityVersion);
+        commentUpdateSql += `,\n                entity_version = $${commentUpdateParams.length}`;
+      }
+
+      commentUpdateParams.push(event.entityId);
+      commentUpdateSql += `\n          where id = $${commentUpdateParams.length}`;
+
+      await client.query(commentUpdateSql, commentUpdateParams);
       await syncCommentNotifications(client, event, mentions);
       return;
     }

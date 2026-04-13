@@ -25,6 +25,7 @@ type EventRow = {
   action_type: EventAction["type"];
   action_data: Record<string, unknown>;
   version: number;
+  entity_version: number | null;
   client_id: string;
   user_id: string;
   timestamp_ms: string | number;
@@ -41,6 +42,7 @@ function toProjectEvent(row: EventRow): ProjectEvent {
       data: row.action_data,
     } as EventAction,
     version: row.version,
+    entityVersion: row.entity_version ?? undefined,
     clientId: row.client_id,
     userId: row.user_id,
     timestamp: Number(row.timestamp_ms),
@@ -61,6 +63,7 @@ async function findExistingEvent(
         action_type,
         action_data,
         version,
+        entity_version,
         client_id,
         user_id,
         timestamp_ms,
@@ -96,11 +99,12 @@ async function insertEvent(
       action_type,
       action_data,
       version,
+      entity_version,
       client_id,
       user_id,
       timestamp_ms,
       parent_version
-    ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       event.id,
       event.projectId,
@@ -108,6 +112,7 @@ async function insertEvent(
       event.action.type,
       event.action.data,
       event.version,
+      event.entityVersion ?? null,
       event.clientId,
       event.userId,
       event.timestamp,
@@ -120,18 +125,114 @@ function isUniqueViolation(error: unknown): error is DatabaseError {
   return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 }
 
-function toStoredEvent(input: AppendEventInput, version: number): ProjectEvent {
+function toStoredEvent(
+  input: AppendEventInput,
+  version: number,
+  entityVersion?: number,
+): ProjectEvent {
   return {
     id: input.id,
     projectId: input.projectId,
     entityId: input.entityId,
     action: input.action,
     version,
+    entityVersion,
     clientId: input.clientId,
     userId: input.userId,
     timestamp: input.timestamp,
     parentVersion: input.parentVersion,
   };
+}
+
+/**
+ * Resolve the next entity_version for the given event input.
+ *
+ * - task.create / comment.create: no prior entity row exists → nextEntityVersion = 1
+ * - task.update / task.delete: lock the tasks row FOR UPDATE and check entity_version
+ * - comment.update / comment.delete: lock the comments row FOR UPDATE and check entity_version
+ * - All other action types (project.*): no per-entity versioning, return undefined
+ *
+ * When `expectedEntityVersion` is undefined in the input the function skips the
+ * per-entity check entirely (backward-compat path).
+ */
+async function resolveEntityVersion(
+  client: PoolClient,
+  parsed: AppendEventInput,
+): Promise<number | undefined> {
+  const { action, entityId, projectId, expectedEntityVersion } = parsed;
+
+  // Per-entity versioning only applies to task and comment mutations
+  switch (action.type) {
+    case "task.create":
+      // No existing row — entity version starts at 1
+      return 1;
+
+    case "task.update":
+    case "task.delete": {
+      if (expectedEntityVersion === undefined) {
+        // Backward compat: skip per-entity check, return undefined
+        return undefined;
+      }
+
+      const taskRow = await client.query<{ entity_version: number }>(
+        `select entity_version from tasks where id = $1 and project_id = $2 for update`,
+        [entityId, projectId],
+      );
+
+      if (taskRow.rowCount === 0) {
+        // Let downstream validation produce the proper DomainError
+        return undefined;
+      }
+
+      const currentEntityVersion = taskRow.rows[0]!.entity_version;
+      if (currentEntityVersion !== expectedEntityVersion) {
+        throw new ConcurrencyConflictError(
+          `task ${entityId}: expected entity version ${expectedEntityVersion}, found ${currentEntityVersion}`,
+        );
+      }
+
+      return currentEntityVersion + 1;
+    }
+
+    case "comment.create":
+      // No existing row — entity version starts at 1
+      return 1;
+
+    case "comment.update":
+    case "comment.delete": {
+      if (expectedEntityVersion === undefined) {
+        // Backward compat: skip per-entity check, return undefined
+        return undefined;
+      }
+
+      const commentRow = await client.query<{ entity_version: number }>(
+        `select comments.entity_version
+           from comments
+           inner join tasks on tasks.id = comments.task_id
+          where comments.id = $1
+            and tasks.project_id = $2
+          for update of comments`,
+        [entityId, projectId],
+      );
+
+      if (commentRow.rowCount === 0) {
+        // Let downstream validation produce the proper DomainError
+        return undefined;
+      }
+
+      const currentEntityVersion = commentRow.rows[0]!.entity_version;
+      if (currentEntityVersion !== expectedEntityVersion) {
+        throw new ConcurrencyConflictError(
+          `comment ${entityId}: expected entity version ${expectedEntityVersion}, found ${currentEntityVersion}`,
+        );
+      }
+
+      return currentEntityVersion + 1;
+    }
+
+    default:
+      return undefined;
+  }
 }
 
 export async function appendEvent(input: AppendEventInput): Promise<ProjectEvent> {
@@ -178,6 +279,7 @@ export async function appendEvent(input: AppendEventInput): Promise<ProjectEvent
       return event;
     }
 
+    // Lock project row for global version sequencing (SSE ordering)
     const project = await client.query<{ current_version: number }>(
       "select current_version from projects where id = $1 for update",
       [parsed.projectId],
@@ -188,15 +290,26 @@ export async function appendEvent(input: AppendEventInput): Promise<ProjectEvent
     }
 
     const currentVersion = project.rows[0]!.current_version;
-    if (currentVersion !== parsed.expectedVersion) {
-      throw new ConcurrencyConflictError(
-        `expected version ${parsed.expectedVersion}, found ${currentVersion}`,
-      );
+
+    // Per-entity versioning check (when expectedEntityVersion is provided).
+    // Falls back to global version check when expectedEntityVersion is absent.
+    let nextEntityVersion: number | undefined;
+
+    if (parsed.expectedEntityVersion !== undefined) {
+      // Per-entity path: validate entity version; skip global version check
+      nextEntityVersion = await resolveEntityVersion(client, parsed);
+    } else {
+      // Global path (backward compat): check project.current_version as before
+      if (currentVersion !== parsed.expectedVersion) {
+        throw new ConcurrencyConflictError(
+          `expected version ${parsed.expectedVersion}, found ${currentVersion}`,
+        );
+      }
     }
 
     await validateEvent(client, parsed);
 
-    const event = toStoredEvent(parsed, currentVersion + 1);
+    const event = toStoredEvent(parsed, currentVersion + 1, nextEntityVersion);
 
     try {
       await insertEvent(client, event);
@@ -248,6 +361,7 @@ export async function getEventsSince(
           action_type,
           action_data,
           version,
+          entity_version,
           client_id,
           user_id,
           timestamp_ms,

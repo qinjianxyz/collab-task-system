@@ -546,6 +546,26 @@ export function useProjectSync(
         return response.event;
       };
 
+      const expectedEntityVersion = (() => {
+        switch (input.action.type) {
+          case "task.create":
+          case "comment.create":
+            return 0;
+          case "task.update":
+          case "task.delete": {
+            const task = baseSnapshot.tasks.find((t) => t.id === input.entityId);
+            return task?.entityVersion;
+          }
+          case "comment.update":
+          case "comment.delete": {
+            const comment = baseSnapshot.comments.find((c) => c.id === input.entityId);
+            return comment?.entityVersion;
+          }
+          default:
+            return undefined;
+        }
+      })();
+
       const requestInput: AppendEventInput = {
         id: crypto.randomUUID(),
         projectId,
@@ -555,6 +575,7 @@ export function useProjectSync(
         userId: identity.userId.trim(),
         timestamp: Date.now(),
         expectedVersion: baseSnapshot.version,
+        expectedEntityVersion,
         parentVersion: input.parentVersion,
       };
 
@@ -587,11 +608,32 @@ export function useProjectSync(
         const freshSnapshot = await refreshSnapshot();
         baseSnapshot = freshSnapshot;
 
+        const retryExpectedEntityVersion = (() => {
+          switch (input.action.type) {
+            case "task.create":
+            case "comment.create":
+              return 0;
+            case "task.update":
+            case "task.delete": {
+              const task = freshSnapshot.tasks.find((t) => t.id === input.entityId);
+              return task?.entityVersion;
+            }
+            case "comment.update":
+            case "comment.delete": {
+              const comment = freshSnapshot.comments.find((c) => c.id === input.entityId);
+              return comment?.entityVersion;
+            }
+            default:
+              return undefined;
+          }
+        })();
+
         const retryInput: AppendEventInput = {
           ...requestInput,
           id: crypto.randomUUID(),
           timestamp: Date.now(),
           expectedVersion: freshSnapshot.version,
+          expectedEntityVersion: retryExpectedEntityVersion,
         };
         const retryOptimisticEvent = buildOptimisticEvent(freshSnapshot, retryInput);
 
