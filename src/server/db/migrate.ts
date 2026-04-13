@@ -13,9 +13,11 @@ async function ensureMigrationTable(): Promise<void> {
 }
 
 async function getPendingMigrationFiles(): Promise<string[]> {
-  const migrationsDirectory = fileURLToPath(
+  const relativeDir = fileURLToPath(
     new URL("../../../drizzle", import.meta.url),
   );
+  const cwdDir = `${process.cwd()}/drizzle`;
+  const migrationsDirectory = await readdir(relativeDir).then(() => relativeDir).catch(() => cwdDir);
   const files = (await readdir(migrationsDirectory))
     .filter((file) => file.endsWith(".sql"))
     .sort();
@@ -34,10 +36,9 @@ export async function runMigrations(): Promise<string[]> {
   const pendingFiles = await getPendingMigrationFiles();
 
   for (const fileName of pendingFiles) {
-    const sql = await readFile(
-      fileURLToPath(new URL(`../../../drizzle/${fileName}`, import.meta.url)),
-      "utf8",
-    );
+    const relPath = fileURLToPath(new URL(`../../../drizzle/${fileName}`, import.meta.url));
+    const cwdPath = `${process.cwd()}/drizzle/${fileName}`;
+    const sql = await readFile(relPath, "utf8").catch(() => readFile(cwdPath, "utf8"));
 
     const client = await getDatabasePool().connect();
 
