@@ -258,7 +258,7 @@ export function useProjectSync(
     const normalizedUserId = identity.userId.trim();
 
     const connect = async () => {
-      setConnectionStatus("loading");
+      setConnectionStatus(snapshotRef.current ? "reconnecting" : "loading");
 
       try {
         if (!snapshotRef.current) {
@@ -401,6 +401,10 @@ export function useProjectSync(
         }
       }
     };
+
+    if (!identity.clientId) {
+      return;
+    }
 
     void connect();
 
