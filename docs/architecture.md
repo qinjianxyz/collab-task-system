@@ -1,384 +1,260 @@
 # Architecture
 
-## Core Idea
+## Core Thesis
 
-This system treats collaboration as a projection problem over one append-only stream per project.
+Collab Task System treats collaboration as an ordered event stream, not as mutable rows with realtime bolted on afterward.
 
-The same event history drives:
+That gives one durable source of truth for:
 
-- current project state
-- real-time SSE fanout
-- optimistic client reconciliation
-- undo and redo
-- presence snapshots
-- activity feed entries
-- future rebuilds, audit, and notifications
+- project state
+- realtime sync
+- undo/redo
+- activity
+- notifications
+- future audit and derived projections
 
-That is the architectural difference from a CRUD app with realtime bolted on later.
-
-## Architecture In One Picture
+## System Shape
 
 ```text
-                       durable path
-
-  user intent
-      |
-      v
-  client command
-      |
-      v
-  POST /api/projects/:id/events
-      |
-      v
-  appendEvent()
-      |
-      +--> validate schema
-      +--> lock project row
-      +--> check expectedVersion
-      +--> validate dependency rules
-      +--> insert event
-      +--> apply projection
-      +--> bump current_version
-      |
-      v
-  commit
-      |
-      +--> events table remains source of truth
-      +--> projection tables serve reads
-      +--> event bus publishes committed event
-      |
-      v
-  SSE stream updates connected clients
+Browser
+  | optimistic local apply
+  | POST append command
+  v
+Next.js route handler
+  | parse + validate
+  | expectedVersion check
+  v
+append-only events table
+  + projection tables
+  | same SQL transaction
+  v
+committed project version
+  | publish committed event
+  v
+SSE stream
+  v
+connected clients
 ```
 
-## System Diagram
+## Durable Write Path
 
 ```text
-Browser A / Browser B
-        | optimistic action
-        v
-  Next.js API route
-        |
-        | validate + append + project
-        | one SQL transaction
-        v
-    PostgreSQL
-   events + projections
-        |
-        | publish committed event
-        v
- Project event bus
-  | in-memory fallback
-  | or Redis pub/sub
-        v
-   SSE stream route
-  | bounded queue
-  | heartbeat
-        v
- Connected clients
+append command
+  -> reject malformed input
+  -> reject stale expectedVersion
+  -> validate dependency graph and status transition rules
+  -> insert event
+  -> apply projection update
+  -> bump project current_version
+  -> commit
+  -> broadcast committed event
 ```
 
-## Projection Model
+Key invariant:
 
-```text
-                one ordered event log per project
+`an event is not durable unless the projection update succeeds in the same transaction`
 
-  events
-    |
-    +--> projects projection  -> project metadata + current_version
-    +--> tasks projection     -> status, assignees, dependencies, position
-    +--> comments projection  -> task thread state + mentions
-    +--> activity projection  -> human-readable recent history
-    +--> client replay        -> optimistic merge, undo/redo, catch-up
-    +--> presence layer       -> ephemeral viewer snapshots over SSE
-```
+That keeps the log and read model aligned without an asynchronous repair loop in the primary path.
 
 ## Event Model
 
-Every mutation is explicit in a discriminated union.
+The shared discriminated union makes every mutation explicit:
 
-Write requests send:
+- `project.create`
+- `project.update`
+- `task.create`
+- `task.update`
+- `task.delete`
+- `comment.create`
+- `comment.update`
+- `comment.delete`
+- `presence.update` for ephemeral viewers
 
-- `id`
-- `entityId`
-- `clientId`
-- `userId`
-- `timestamp`
-- `expectedVersion`
-- `action`
+Durable events are stored in Postgres. Presence is intentionally ephemeral and kept out of the durable event log.
 
-On commit, the server assigns:
+Collaborative descriptions are intentionally split:
 
-- `version`
-- optional `parentVersion`
+- live shared editing flows through a task-scoped Yjs document
+- durable checkpoints still land in the event log via `task.update`
 
-Important invariants:
+That keeps the system honest: the user gets multiplayer text editing, but the long-term record still lives in the same task model as every other durable mutation.
 
-- project versions are monotonic
-- idempotency is scoped to `(project_id, event_id)`
-- `presence.update` is part of the shared model but rejected from durable storage
-- append + projection happens in the same transaction
+## Read Model
 
-## Persistence Model
-
-PostgreSQL stores:
+Postgres stores:
 
 - `projects`
 - `tasks`
 - `comments`
+- `notifications`
 - `events`
 
-`events` is the source of truth. Projection tables exist to serve snapshots, domain validation, and UI queries efficiently.
+`events` is the source of truth. The projection tables exist for:
 
-The critical rule is transactional coupling:
+- current snapshot reads
+- dependency validation
+- paged task windows
+- comment lookup without replaying the entire event stream
+- durable mention notifications without replaying comment history
 
-1. insert event
-2. apply projection
-3. bump project version
-4. commit
-
-If projection application fails, the event does not commit.
-
-## Write Path
+## Sync Model
 
 ```text
-Client                    API route / event store                Postgres
-  |                                 |                               |
-  | append command                  |                               |
-  |-------------------------------->|                               |
-  |                                 | parse + validate             |
-  |                                 | lock project row             |
-  |                                 | compare expectedVersion      |
-  |                                 | validate DAG / transitions   |
-  |                                 | insert event                 |
-  |                                 | apply projection changes     |
-  |                                 | update current_version       |
-  |                                 | commit --------------------->|
-  |                                 | publish committed event      |
-  |<--------------------------------|                               |
-  | receive committed version       |                               |
+initial render
+  -> server renders first task window
+
+live collaboration
+  -> open SSE stream
+  -> apply committed events
+
+local write
+  -> optimistic local apply
+  -> POST append command
+  -> reconcile against committed event
+
+conflict
+  -> refresh from server
+  -> retry once with latest version
 ```
 
-1. Parse the append command with shared Zod schemas.
-2. Reject ephemeral mutations such as durable `presence.update`.
-3. Lock the target project row.
-4. Check `expectedVersion` against `projects.current_version`.
-5. Validate dependency DAG constraints and blocked status transitions.
-6. Insert the event into `events`.
-7. Apply the projection updates.
-8. Update `projects.current_version`.
-9. Commit.
-10. Publish the committed event to the project event bus.
+This keeps the transport simple:
 
-The bus selects:
+- HTTP POST for writes
+- SSE for fan-out
+- ordered versions for reconciliation
+- bounded SSE buffers with reconnect-based catch-up for slow consumers
 
-- in-memory `EventEmitter` for single-instance demos
-- Redis pub/sub when `REDIS_URL` is configured
+## Dependency Semantics
 
-## Conflict Recovery
+Dependencies live in `task.dependencies[]`.
+
+The UX language is intentionally explicit:
+
+- composer: `Blocked by`
+- task card: `Blocked by:`
+
+The server enforces:
+
+1. no dependency cycles
+2. no move to `in_progress` while a prerequisite is unfinished
+3. no delete of a task that another task still depends on
+
+That means the UI can stay optimistic without being the final source of domain truth.
+
+## Comments
+
+Comments are events too:
+
+- create
+- edit
+- delete
+
+The server now rejects comment updates and deletes when the target comment does not exist, so the client cannot drift into successful no-op edits.
+
+## Undo And Redo
+
+Undo and redo are client-driven event inversion:
+
+- create -> delete
+- update -> inverse update with prior values
+- delete -> recreate with prior values
+
+The server does not have a special undo subsystem. It only validates and commits normal events.
+
+## Read-Path Scale Shape
+
+The scale path is intentionally separate from the write model:
 
 ```text
-Client                             Server
-  | optimistic apply                 |
-  | POST /events expectedVersion=7   |
-  |--------------------------------->|
-  |                                  | current_version = 8
-  |                                  | reject with 409
-  |<---------------------------------|
-  | refetch snapshot                 |
-  | GET /snapshot                    |
-  |--------------------------------->|
-  |<---------------------------------|
-  | GET /events?since=7              |
-  |--------------------------------->|
-  |<---------------------------------|
-  | retry with expectedVersion=8     |
+server render
+  -> first task page only
+
+scroll near end
+  -> fetch next task page by cursor
+
+render
+  -> virtualize the loaded task window
 ```
 
-## Read Path
+This improves the cost of large projects without compromising the event-sourced architecture.
 
-The read path is now explicitly paged.
-
-Initial load:
-
-1. `GET /api/projects/:id/snapshot?taskLimit=100`
-2. server returns project metadata, current version, and the first task window
-3. comments are scoped to the loaded tasks only
-
-Incremental load:
-
-1. `GET /api/projects/:id/tasks?after=<cursor>&limit=100`
-2. cursor ordering is stable on `(position, id)`
-3. client merges the next page into the loaded window
-
-Render path:
-
-- the client virtualizes task cards
-- only the visible task window is mounted in the DOM
-- dependency selection is capped to a filtered subset of loaded tasks so the form does not recreate the large-list problem
-
-## Sync Path
+## Collaboration Layers
 
 ```text
-cold start
-  snapshot -> stream subscribe -> steady-state events
+durable collaboration
+  -> events table
+  -> tasks/comments/notifications projections
 
-steady state
-  optimistic apply -> POST append -> committed SSE event -> converge
+ephemeral collaboration
+  -> presence store
+  -> live cursor payloads
+  -> task-scoped Yjs document streams
 ```
 
-The client hook keeps:
+This split is deliberate:
 
-- the last committed server snapshot
-- one optimistic overlay mutation
-- undo and redo stacks
-- presence state
-- activity entries
+- Postgres answers "what is the durable project history?"
+- SSE answers "what just committed and who is active right now?"
+- task-doc channels answer "what is the current shared description buffer?"
 
-Steady-state sync:
+The SSE layer is intentionally defensive:
 
-1. fetch snapshot
-2. subscribe to `/stream`
-3. apply optimistic change locally
-4. POST append command
-5. receive committed event over SSE
-6. clear optimistic overlay
+- streams emit heartbeats every 15 seconds
+- buffered SSE writes are bounded
+- if a consumer falls behind, the stream closes and the client reconnects from the last committed version
 
-Conflict path:
+## Mention Notifications
 
-1. server returns `409`
-2. client refetches snapshot
-3. client fetches events since the last known version
-4. client retries once with fresh state
+Comment mentions are parsed during projection updates and written into the `notifications` table.
 
-Reconnect path:
+That means notifications:
 
-1. stream disconnects
-2. client preserves `lastVersion`
-3. client calls `/events?since=<lastVersion>`
-4. client reapplies missed events
+- survive reloads
+- are queryable without replaying the full stream
+- remain derived from the same comment events as the rest of the system
 
-## Reconnect And Catch-Up
+There is no separate notification write path.
 
-```text
-Client                          Server
-  | stream drops                  |
-  | preserve lastVersion=412      |
-  | GET /events?since=412         |
-  |------------------------------>|
-  |<------------------------------|
-  | apply missed events           |
-  | reconnect /stream             |
-  |------------------------------>|
-  |<------------------------------|
-  | receive fresh live events     |
-```
+## Board View
 
-## Presence
+Kanban is an alternate projection over the same task model:
 
-Presence is ephemeral by design.
+- columns are `TaskStatus`
+- card order is `position`
+- drag-and-drop emits a normal `task.update` with the new `status` and `position`
 
-Shipped behavior:
+The board does not create a second ordering model. It reuses the same fields the list view already understands.
 
-- in-memory presence store for single-instance demos
-- Redis-backed presence store when `REDIS_URL` is configured
-- disconnect TTL before removal
-- SSE broadcast of full viewer snapshots
+## Why This Beats CRUD For This Problem
 
-Presence never goes to Postgres.
+The rubric asks for:
 
-## Stream Protection
+- cross-client consistency
+- near real-time updates
+- future-proof behavior for large project payloads
+- no managed realtime backend
 
-```text
-event bus -> per-connection queue -> stream controller -> browser
-                 |
-                 +--> if queue exceeds SSE_BUFFER_LIMIT:
-                      close stream
-                      let client recover through catch-up
-```
+Event sourcing fits that better than CRUD because the system ships small, ordered changes and paged reads instead of repeatedly serializing a giant mutable document.
 
-The SSE route now uses a bounded buffer:
+## Boundaries
 
-- chunks are queued before writing to the stream controller
-- when the controller is backpressured, writes pause
-- if the queue overflows, the stream is closed
-- the client is expected to recover through `/events?since=...`
+Shipped here:
 
-That keeps one slow consumer from creating unbounded memory pressure on the server.
+- transactional append + projection writes
+- optimistic concurrency
+- SSE-based collaboration
+- live cursor badges
+- collaborative description editing
+- mention notifications
+- Kanban drag-and-drop
+- task/comment lifecycle UI
+- presence and activity
+- cursor-based task paging
+- virtualized benchmark rendering
 
-## Write Protection
+Still next:
 
-Both write routes are rate limited:
-
-- `POST /api/projects`
-- `POST /api/projects/:id/events`
-
-Shipped behavior:
-
-- in-memory fixed-window limiter by default
-- Redis-backed limiter when `REDIS_URL` is configured
-- `429` responses with `Retry-After`
-
-The defaults are intentionally generous for the demo path, but the protection is there for real traffic and scripted abuse.
-
-## Undo, Redo, and Activity
-
-Undo and redo are client-driven inversions:
-
-- `task.create` -> `task.delete`
-- `comment.create` -> `comment.delete`
-- updates -> inverse updates with previous field values
-
-The inverse is appended as a normal event with `parentVersion`.
-
-The activity feed is another projection over recent events:
-
-- load recent history from the log
-- format human-readable summaries
-- prepend new committed events as they arrive
-
-No extra persistence layer is needed.
-
-## Handling the 2MB Constraint
-
-```text
-first view:   paged snapshot (project + first task window)
-steady state: small project events
-reconnect:    events since lastVersion
-render:       virtualized visible task cards only
-```
-
-The take-home explicitly assumes projects may eventually exceed `2MB`.
-
-This architecture addresses that constraint directly:
-
-- initial load ships a paged snapshot
-- steady-state sync ships small events
-- reconnect uses event catch-up instead of full project reloads
-- the UI mounts only a virtual window of loaded tasks
-
-That is why event sourcing plus paged projections is a better fit than document-style CRUD sync.
-
-## Current Tradeoffs
-
-- Auth is still demo-only.
-- Offline replay is still future work.
-- Redis-backed abstractions are exercised in automation through independent Redis-backed instances and stream-race coverage, but the suite still does not orchestrate multiple full app containers behind shared Redis.
-- Event partitioning and snapshot caching are documented next steps, not shipped migrations.
-
-## Verification Evidence
-
-Verified in this repo by:
-
-- unit tests for replay, validation, history inversion, pagination, presence, buffering, and rate limiting
-- integration tests for append ordering, snapshots, conflicts, SSE delivery, reconnect catch-up, and route limits
-- Playwright tests for two-tab sync, presence, undo/redo, dependency errors, comments, shortcut help, and large-list pagination
-- load probes in `load/` plus the large-project seed script in `scripts/`
-
-## Questions This Doc Answers
-
-- Why does event sourcing help here instead of just adding websockets to CRUD?
-- How do we keep state and history consistent across clients?
-- Where are conflicts detected and resolved?
-- How do reconnects avoid reloading a multi-megabyte project?
-- What protects the stream and write path under load?
+- real auth
+- offline replay
+- Redis-backed fan-out across multiple app instances
+- multi-node performance validation

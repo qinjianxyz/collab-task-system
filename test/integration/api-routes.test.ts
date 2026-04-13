@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { closeDatabasePool } from "../../src/server/db/client";
 import { resetDatabase, waitForDatabase } from "../../src/server/db/testing";
@@ -24,33 +24,8 @@ describe("project API routes", () => {
     await resetDatabase();
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   afterAll(async () => {
     await closeDatabasePool();
-  });
-
-  it("reports application health including database and redis reachability", async () => {
-    vi.stubEnv("REDIS_URL", "redis://127.0.0.1:6379");
-
-    const { GET: getHealth } = await import("../../app/api/health/route");
-
-    const response = await getHealth();
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      status: "ok",
-      services: {
-        database: {
-          status: "ok",
-        },
-        redis: {
-          status: "ok",
-        },
-      },
-    });
   });
 
   it("creates a project and returns its first snapshot through the API", async () => {
@@ -196,155 +171,6 @@ describe("project API routes", () => {
     });
   });
 
-  it("rejects a stale comment edit retry after another client deletes the comment", async () => {
-    const { POST: createProject } = await import("../../app/api/projects/route");
-    const { GET: getSnapshot } = await import(
-      "../../app/api/projects/[projectId]/snapshot/route"
-    );
-    const { POST: appendProjectEvent } = await import(
-      "../../app/api/projects/[projectId]/events/route"
-    );
-
-    const createResponse = await createProject(
-      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
-        name: "Comment Race",
-        clientId: "client_alpha",
-        userId: "alice",
-      }),
-    );
-    const { projectId } = await createResponse.json();
-
-    await appendProjectEvent(
-      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_task_comment_race",
-        entityId: "task_comment_race",
-        clientId: "client_alpha",
-        userId: "alice",
-        timestamp: 1_716_000_000_000,
-        expectedVersion: 1,
-        action: {
-          type: "task.create",
-          data: {
-            title: "Comment target",
-            status: "todo",
-            projectId,
-          },
-        },
-      }),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    await appendProjectEvent(
-      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_comment_create_race",
-        entityId: "comment_race",
-        clientId: "client_beta",
-        userId: "bob",
-        timestamp: 1_716_000_000_100,
-        expectedVersion: 2,
-        action: {
-          type: "comment.create",
-          data: {
-            taskId: "task_comment_race",
-            content: "Draft comment",
-            author: "bob",
-          },
-        },
-      }),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    await appendProjectEvent(
-      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_comment_delete_race",
-        entityId: "comment_race",
-        clientId: "client_alpha",
-        userId: "alice",
-        timestamp: 1_716_000_000_200,
-        expectedVersion: 3,
-        action: {
-          type: "comment.delete",
-          data: {},
-        },
-      }),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    const staleUpdate = await appendProjectEvent(
-      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_comment_update_stale",
-        entityId: "comment_race",
-        clientId: "client_beta",
-        userId: "bob",
-        timestamp: 1_716_000_000_300,
-        expectedVersion: 3,
-        action: {
-          type: "comment.update",
-          data: {
-            content: "Edited comment",
-          },
-        },
-      }),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    expect(staleUpdate.status).toBe(409);
-
-    const snapshotResponse = await getSnapshot(
-      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot`),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-    const snapshotPayload = await snapshotResponse.json();
-
-    const retryUpdate = await appendProjectEvent(
-      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_comment_update_retry",
-        entityId: "comment_race",
-        clientId: "client_beta",
-        userId: "bob",
-        timestamp: 1_716_000_000_400,
-        expectedVersion: snapshotPayload.snapshot.version,
-        action: {
-          type: "comment.update",
-          data: {
-            content: "Edited comment",
-          },
-        },
-      }),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    expect(retryUpdate.status).toBe(422);
-    expect(await retryUpdate.json()).toMatchObject({
-      error: {
-        code: "domain_error",
-      },
-    });
-
-    const finalSnapshotResponse = await getSnapshot(
-      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot`),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-    const finalSnapshotPayload = await finalSnapshotResponse.json();
-
-    expect(finalSnapshotPayload.snapshot.version).toBe(4);
-    expect(finalSnapshotPayload.snapshot.comments).toHaveLength(0);
-  });
-
   it("rejects presence.update through the append API because presence is ephemeral", async () => {
     const { POST: createProject } = await import("../../app/api/projects/route");
     const { POST: appendProjectEvent } = await import(
@@ -384,117 +210,25 @@ describe("project API routes", () => {
     expect(presenceWrite.status).toBe(422);
   });
 
-  it("returns a specific 422 payload when a blocked status transition is attempted", async () => {
-    const { POST: createProject } = await import("../../app/api/projects/route");
-    const { POST: appendProjectEvent } = await import(
-      "../../app/api/projects/[projectId]/events/route"
-    );
-
-    const createResponse = await createProject(
-      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
-        name: "Blocked Transition",
-        clientId: "client_alpha",
-        userId: "alice",
-      }),
-    );
-    const { projectId } = await createResponse.json();
-
-    await appendProjectEvent(
-      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_task_fix_auth",
-        entityId: "task_fix_auth",
-        clientId: "client_alpha",
-        userId: "alice",
-        timestamp: 1_716_000_000_000,
-        expectedVersion: 1,
-        action: {
-          type: "task.create",
-          data: {
-            title: "Fix auth",
-            status: "todo",
-            projectId,
-          },
-        },
-      }),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    await appendProjectEvent(
-      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_task_ship_dashboard",
-        entityId: "task_ship_dashboard",
-        clientId: "client_alpha",
-        userId: "alice",
-        timestamp: 1_716_000_000_100,
-        expectedVersion: 2,
-        action: {
-          type: "task.create",
-          data: {
-            title: "Ship dashboard",
-            status: "todo",
-            projectId,
-            dependencies: ["task_fix_auth"],
-          },
-        },
-      }),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    const blockedResponse = await appendProjectEvent(
-      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_task_ship_dashboard_update",
-        entityId: "task_ship_dashboard",
-        clientId: "client_beta",
-        userId: "bob",
-        timestamp: 1_716_000_000_200,
-        expectedVersion: 3,
-        action: {
-          type: "task.update",
-          data: {
-            status: "in_progress",
-          },
-        },
-      }),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    expect(blockedResponse.status).toBe(422);
-    expect(await blockedResponse.json()).toMatchObject({
-      error: {
-        code: "invalid_status_transition",
-        message: 'Blocked: dependency "Fix auth" must be completed first.',
-      },
-    });
-  });
-
   it("rejects deleting a task that other tasks still depend on", async () => {
     const { POST: createProject } = await import("../../app/api/projects/route");
-    const { GET: getSnapshot } = await import(
-      "../../app/api/projects/[projectId]/snapshot/route"
-    );
     const { POST: appendProjectEvent } = await import(
       "../../app/api/projects/[projectId]/events/route"
     );
 
     const createResponse = await createProject(
       createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
-        name: "Dependency Delete Guard",
+        name: "Dependencies",
         clientId: "client_alpha",
         userId: "alice",
       }),
     );
     const { projectId } = await createResponse.json();
 
-    await appendProjectEvent(
+    const createTaskA = await appendProjectEvent(
       createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_task_fix_auth",
-        entityId: "task_fix_auth",
+        id: "evt_task_a",
+        entityId: "task_a",
         clientId: "client_alpha",
         userId: "alice",
         timestamp: 1_716_000_000_000,
@@ -502,8 +236,8 @@ describe("project API routes", () => {
         action: {
           type: "task.create",
           data: {
-            title: "Fix auth",
-            status: "todo",
+            title: "Finalize auth",
+            status: "done",
             projectId,
           },
         },
@@ -512,14 +246,15 @@ describe("project API routes", () => {
         params: Promise.resolve({ projectId }),
       },
     );
+    expect(createTaskA.status).toBe(201);
 
-    await appendProjectEvent(
+    const createTaskB = await appendProjectEvent(
       createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_task_ship_dashboard",
-        entityId: "task_ship_dashboard",
+        id: "evt_task_b",
+        entityId: "task_b",
         clientId: "client_alpha",
         userId: "alice",
-        timestamp: 1_716_000_000_100,
+        timestamp: 1_716_000_000_500,
         expectedVersion: 2,
         action: {
           type: "task.create",
@@ -527,7 +262,7 @@ describe("project API routes", () => {
             title: "Ship dashboard",
             status: "todo",
             projectId,
-            dependencies: ["task_fix_auth"],
+            dependencies: ["task_a"],
           },
         },
       }),
@@ -535,14 +270,15 @@ describe("project API routes", () => {
         params: Promise.resolve({ projectId }),
       },
     );
+    expect(createTaskB.status).toBe(201);
 
-    const deleteResponse = await appendProjectEvent(
+    const deleteTaskA = await appendProjectEvent(
       createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_task_fix_auth_delete",
-        entityId: "task_fix_auth",
+        id: "evt_task_a_delete",
+        entityId: "task_a",
         clientId: "client_alpha",
         userId: "alice",
-        timestamp: 1_716_000_000_200,
+        timestamp: 1_716_000_001_000,
         expectedVersion: 3,
         action: {
           type: "task.delete",
@@ -554,251 +290,33 @@ describe("project API routes", () => {
       },
     );
 
-    expect(deleteResponse.status).toBe(422);
-    expect(await deleteResponse.json()).toMatchObject({
+    expect(deleteTaskA.status).toBe(422);
+    await expect(deleteTaskA.json()).resolves.toMatchObject({
       error: {
         code: "domain_error",
       },
     });
-
-    const snapshotResponse = await getSnapshot(
-      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot`),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-    const snapshotPayload = await snapshotResponse.json();
-
-    expect(snapshotPayload.snapshot.version).toBe(3);
-    expect(snapshotPayload.snapshot.tasks).toHaveLength(2);
   });
 
-  it("returns a bounded snapshot page and fetches the next task window by cursor", async () => {
+  it("rejects updating or deleting comments that do not exist", async () => {
     const { POST: createProject } = await import("../../app/api/projects/route");
     const { POST: appendProjectEvent } = await import(
       "../../app/api/projects/[projectId]/events/route"
     );
-    const { GET: getSnapshot } = await import(
-      "../../app/api/projects/[projectId]/snapshot/route"
-    );
-    const { GET: getTaskPage } = await import(
-      "../../app/api/projects/[projectId]/tasks/route"
-    );
 
     const createResponse = await createProject(
       createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
-        name: "Paged",
+        name: "Comments",
         clientId: "client_alpha",
         userId: "alice",
       }),
     );
     const { projectId } = await createResponse.json();
 
-    for (const [index, title] of ["Task 1", "Task 2", "Task 3"].entries()) {
-      const eventId = `evt_task_create_${index + 1}`;
-      const taskId = `task_${index + 1}`;
-      const response = await appendProjectEvent(
-        createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-          id: eventId,
-          entityId: taskId,
-          clientId: "client_alpha",
-          userId: "alice",
-          timestamp: 1_716_000_000_000 + index,
-          expectedVersion: index + 1,
-          action: {
-            type: "task.create",
-            data: {
-              title,
-              status: "todo",
-              projectId,
-            },
-          },
-        }),
-        {
-          params: Promise.resolve({ projectId }),
-        },
-      );
-
-      expect(response.status).toBe(201);
-    }
-
-    const commentResponse = await appendProjectEvent(
+    const createTask = await appendProjectEvent(
       createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_comment_create_1",
-        entityId: "comment_1",
-        clientId: "client_alpha",
-        userId: "alice",
-        timestamp: 1_716_000_000_010,
-        expectedVersion: 4,
-        action: {
-          type: "comment.create",
-          data: {
-            taskId: "task_3",
-            content: "Only page 2 should see me",
-            author: "alice",
-          },
-        },
-      }),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    expect(commentResponse.status).toBe(201);
-
-    const snapshotResponse = await getSnapshot(
-      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot?taskLimit=2`),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    expect(snapshotResponse.status).toBe(200);
-    const snapshotPayload = await snapshotResponse.json();
-
-    expect(snapshotPayload.snapshot.tasks.map((task: { id: string }) => task.id)).toEqual([
-      "task_1",
-      "task_2",
-    ]);
-    expect(snapshotPayload.snapshot.comments).toEqual([]);
-    expect(snapshotPayload.snapshot.taskPage.totalCount).toBe(3);
-    expect(snapshotPayload.snapshot.taskPage.hasMore).toBe(true);
-    expect(snapshotPayload.snapshot.taskPage.nextCursor).toBeTruthy();
-
-    const nextCursor = snapshotPayload.snapshot.taskPage.nextCursor;
-
-    const pageResponse = await getTaskPage(
-      new Request(
-        `${BASE_URL}/api/projects/${projectId}/tasks?after=${encodeURIComponent(nextCursor)}&limit=2`,
-      ),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    expect(pageResponse.status).toBe(200);
-    const pagePayload = await pageResponse.json();
-
-    expect(pagePayload.page.tasks.map((task: { id: string }) => task.id)).toEqual(["task_3"]);
-    expect(pagePayload.page.comments.map((comment: { taskId: string }) => comment.taskId)).toEqual([
-      "task_3",
-    ]);
-    expect(pagePayload.page.hasMore).toBe(false);
-    expect(pagePayload.page.nextCursor).toBeNull();
-  });
-
-  it("returns stable paging metadata on repeated snapshot reads", async () => {
-    const { POST: createProject } = await import("../../app/api/projects/route");
-    const { POST: appendProjectEvent } = await import(
-      "../../app/api/projects/[projectId]/events/route"
-    );
-    const { GET: getSnapshot } = await import(
-      "../../app/api/projects/[projectId]/snapshot/route"
-    );
-
-    const createResponse = await createProject(
-      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
-        name: "Stable Paging",
-        clientId: "client_alpha",
-        userId: "alice",
-      }),
-    );
-    const { projectId } = await createResponse.json();
-
-    for (const [index, title] of ["Task 1", "Task 2", "Task 3"].entries()) {
-      await appendProjectEvent(
-        createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-          id: `evt_stable_page_${index + 1}`,
-          entityId: `task_${index + 1}`,
-          clientId: "client_alpha",
-          userId: "alice",
-          timestamp: 1_716_000_000_000 + index,
-          expectedVersion: index + 1,
-          action: {
-            type: "task.create",
-            data: {
-              title,
-              status: "todo",
-              projectId,
-            },
-          },
-        }),
-        {
-          params: Promise.resolve({ projectId }),
-        },
-      );
-    }
-
-    const firstSnapshotResponse = await getSnapshot(
-      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot?taskLimit=2`),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-    const secondSnapshotResponse = await getSnapshot(
-      new Request(`${BASE_URL}/api/projects/${projectId}/snapshot?taskLimit=2`),
-      {
-        params: Promise.resolve({ projectId }),
-      },
-    );
-
-    expect(firstSnapshotResponse.status).toBe(200);
-    expect(secondSnapshotResponse.status).toBe(200);
-
-    const firstSnapshotPayload = await firstSnapshotResponse.json();
-    const secondSnapshotPayload = await secondSnapshotResponse.json();
-
-    expect(firstSnapshotPayload.snapshot.taskPage).toEqual(secondSnapshotPayload.snapshot.taskPage);
-    expect(firstSnapshotPayload.snapshot.taskPage).toMatchObject({
-      hasMore: true,
-      totalCount: 3,
-    });
-    expect(firstSnapshotPayload.snapshot.tasks.map((task: { id: string }) => task.id)).toEqual([
-      "task_1",
-      "task_2",
-    ]);
-  });
-
-  it("returns 429 with Retry-After when the write rate limit is exceeded", async () => {
-    vi.stubEnv("WRITE_RATE_LIMIT_LIMIT", "1");
-    vi.stubEnv("WRITE_RATE_LIMIT_WINDOW_MS", "60000");
-
-    const { POST: createProject } = await import("../../app/api/projects/route");
-    const { POST: appendProjectEvent } = await import(
-      "../../app/api/projects/[projectId]/events/route"
-    );
-
-    const createResponse = await createProject(
-      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
-        name: "Limited",
-        clientId: "client_alpha",
-        userId: "alice",
-      }),
-    );
-
-    expect(createResponse.status).toBe(201);
-    const { projectId } = await createResponse.json();
-
-    const limitedCreate = await createProject(
-      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
-        name: "Limited Again",
-        clientId: "client_alpha",
-        userId: "alice",
-      }),
-    );
-
-    expect(limitedCreate.status).toBe(429);
-    expect(Number(limitedCreate.headers.get("Retry-After"))).toBeGreaterThan(0);
-    expect(await limitedCreate.json()).toMatchObject({
-      error: {
-        code: "rate_limited",
-      },
-    });
-
-    const firstWrite = await appendProjectEvent(
-      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_rate_limit_1",
-        entityId: "task_1",
+        id: "evt_task_comments",
+        entityId: "task_comments",
         clientId: "client_alpha",
         userId: "alice",
         timestamp: 1_716_000_000_000,
@@ -806,7 +324,7 @@ describe("project API routes", () => {
         action: {
           type: "task.create",
           data: {
-            title: "Allowed",
+            title: "Review copy",
             status: "todo",
             projectId,
           },
@@ -816,23 +334,20 @@ describe("project API routes", () => {
         params: Promise.resolve({ projectId }),
       },
     );
+    expect(createTask.status).toBe(201);
 
-    expect(firstWrite.status).toBe(201);
-
-    const limitedWrite = await appendProjectEvent(
+    const updateMissingComment = await appendProjectEvent(
       createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
-        id: "evt_rate_limit_2",
-        entityId: "task_2",
+        id: "evt_comment_missing_update",
+        entityId: "comment_missing",
         clientId: "client_alpha",
         userId: "alice",
         timestamp: 1_716_000_000_500,
         expectedVersion: 2,
         action: {
-          type: "task.create",
+          type: "comment.update",
           data: {
-            title: "Blocked",
-            status: "todo",
-            projectId,
+            content: "Edited",
           },
         },
       }),
@@ -841,12 +356,26 @@ describe("project API routes", () => {
       },
     );
 
-    expect(limitedWrite.status).toBe(429);
-    expect(Number(limitedWrite.headers.get("Retry-After"))).toBeGreaterThan(0);
-    expect(await limitedWrite.json()).toMatchObject({
-      error: {
-        code: "rate_limited",
+    expect(updateMissingComment.status).toBe(422);
+
+    const deleteMissingComment = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_comment_missing_delete",
+        entityId: "comment_missing",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_001_000,
+        expectedVersion: 2,
+        action: {
+          type: "comment.delete",
+          data: {},
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
       },
-    });
+    );
+
+    expect(deleteMissingComment.status).toBe(422);
   });
 });

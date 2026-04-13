@@ -1,121 +1,59 @@
-# API Reference
+# API Notes
 
-The full contract lives in [openapi.yaml](./openapi.yaml).
+The canonical machine-readable contract is [openapi.yaml](./openapi.yaml).
 
-This page is the quick operator/developer summary.
+## Route Summary
 
-## Endpoints
+- `POST /api/projects`
+  - creates a new project by appending `project.create`
+- `GET /api/projects/{projectId}/snapshot`
+  - returns the current projected snapshot
+- `GET /api/projects/{projectId}/events?since=N`
+  - returns committed events after version `N`
+- `POST /api/projects/{projectId}/events`
+  - appends a validated project event
+- `GET /api/projects/{projectId}/notifications?userId=alice`
+  - returns durable mention notifications for the current user
+- `POST /api/projects/{projectId}/presence`
+  - updates ephemeral viewer and live-cursor state
+- `GET /api/projects/{projectId}/tasks?limit=32&after=<cursor>`
+  - returns a cursor-paged task window plus comments scoped to those tasks
+- `GET /api/projects/{projectId}/stream`
+  - SSE stream for `version`, `project-event`, `presence`, and `heartbeat`
+  - bounded server-side buffering; slow consumers reconnect and catch up by version
+- `GET /api/projects/{projectId}/tasks/{taskId}/description`
+  - returns the current Yjs state for the collaborative task description
+- `POST /api/projects/{projectId}/tasks/{taskId}/description`
+  - applies a client-generated Yjs update to the shared task description
+- `GET /api/projects/{projectId}/tasks/{taskId}/description/stream`
+  - task-scoped SSE stream for collaborative description updates
 
-### `GET /api/health`
+## Error Semantics
 
-Readiness endpoint for app, database, and Redis reachability.
+- `400`
+  - malformed JSON or invalid query parameters
+- `409`
+  - optimistic concurrency conflict on `expectedVersion`
+- `422`
+  - domain validation failure such as dependency cycles, blocked status transitions, or invalid deletes
 
-- `200`: app is healthy
-- `503`: one or more critical dependencies failed
+## Why The Task Page Exists
 
-### `POST /api/projects`
+The task page route is the scale-oriented read path:
 
-Creates a project by appending a `project.create` event.
+- first page is loaded into the project workspace on initial render
+- later pages are fetched by cursor
+- comments are scoped to the visible task window
+- the client can virtualize the loaded tasks instead of rendering an unbounded DOM
 
-Required fields:
+This keeps the write model unchanged while making the read path honest for larger projects.
 
-- `name`
-- `clientId`
-- `userId`
+## Collaboration-Specific Routes
 
-Response:
+The collaboration transport is intentionally layered:
 
-- `201` with `projectId` and the committed event
+- project SSE stream for committed events, version catch-up, presence, and live cursors
+- task-description sync route plus SSE stream for low-latency collaborative text editing
+- notification route for durable `@mentions`
 
-### `GET /api/projects/{projectId}/snapshot`
-
-Returns the current project projection plus the first task page.
-
-Query params:
-
-- `taskLimit` optional, default `100`, max `250`
-
-Response:
-
-- project metadata
-- current version
-- `tasks` and `comments` for the loaded page
-- `taskPage` metadata with `nextCursor`, `hasMore`, and `totalCount`
-
-### `GET /api/projects/{projectId}/tasks`
-
-Fetches the next task page.
-
-Query params:
-
-- `after` cursor returned by the previous page
-- `limit` optional, default `100`, max `250`
-
-### `GET /api/projects/{projectId}/events`
-
-Fetches ordered events after a known project version.
-
-Query params:
-
-- `since` required, non-negative integer
-
-This is the reconnect and catch-up path.
-
-### `POST /api/projects/{projectId}/events`
-
-Appends a mutation event.
-
-Important fields:
-
-- `id`
-- `entityId`
-- `clientId`
-- `userId`
-- `timestamp`
-- `expectedVersion`
-- `action`
-
-Important responses:
-
-- `201` committed
-- `409` optimistic concurrency conflict
-- `422` domain validation failure
-- `429` write rate limited
-
-### `GET /api/projects/{projectId}/stream`
-
-SSE endpoint for live updates.
-
-Emits:
-
-- `version`
-- `project-event`
-- `presence`
-- `heartbeat`
-
-The route uses a bounded server-side queue. Slow consumers are disconnected and expected to recover through `GET /events?since=<lastVersion>`.
-
-## Error Contract
-
-JSON error responses use:
-
-```json
-{
-  "error": {
-    "code": "string",
-    "message": "string"
-  }
-}
-```
-
-Common codes:
-
-- `bad_request`
-- `validation_error`
-- `concurrency_conflict`
-- `rate_limited`
-
-## Notes
-
-- `presence.update` exists in the shared event model but is not persisted through the append API.
-- Undo/redo is client-driven and appears to the server as ordinary appended events.
+That separation avoids overloading the append-event API with ephemeral state while keeping the durable system event-sourced.

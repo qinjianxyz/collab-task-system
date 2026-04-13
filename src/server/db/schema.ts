@@ -73,6 +73,38 @@ export const comments = pgTable(
   }),
 );
 
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    taskTitle: text("task_title").notNull(),
+    commentId: text("comment_id").notNull(),
+    userId: text("user_id").notNull(),
+    actorUserId: text("actor_user_id").notNull(),
+    contentPreview: text("content_preview").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    projectUserUpdatedAtIndex: index("notifications_project_user_updated_at_idx").on(
+      table.projectId,
+      table.userId,
+      table.updatedAt,
+    ),
+    commentUserUniqueIndex: uniqueIndex("notifications_project_comment_user_unique_idx").on(
+      table.projectId,
+      table.commentId,
+      table.userId,
+    ),
+  }),
+);
+
 export const events = pgTable(
   "events",
   {

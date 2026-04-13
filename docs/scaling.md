@@ -1,208 +1,136 @@
-# Scaling Proof
+# Scaling Notes
 
-## Goal
+## The Constraint
 
-This document records the concrete proof that the current implementation handles the assignment's large-project and realtime constraints with shipped code, not only with architecture notes.
+The take-home explicitly says project payloads can eventually exceed `2MB` and that the system should avoid retransmitting the whole project after every change.
 
-## Scale Posture At A Glance
-
-```text
-assignment constraint: project payloads can grow past 2MB
-
-naive approach:
-  reload large project documents
-  mount every task row
-  reconnect by fetching everything again
-
-shipped approach:
-  snapshot only the first task window
-  fetch later task pages by cursor
-  virtualize rendering to visible rows
-  reconnect with /events?since=N
-  bound stream memory with per-connection queues
-```
-
-## Test Environment
-
-- Next.js 16 production build
-- PostgreSQL 17
-- Redis 7
-- local app process on `127.0.0.1:3100`
-- seeded project created through the same `appendEvent()` path used by the app
-
-The measurements below were captured on April 11, 2026 against the exact code in this repository.
-
-## Seeded Dataset
-
-Command:
-
-```bash
-TASK_COUNT=10000 bun run seed:scale
-```
-
-Observed result:
-
-- `10,000` tasks
-- seed duration: `209,839ms`
-- seeded project id during this run: `b60fd3ec-2071-4e9a-8c9d-f9dbcaa426b8`
-
-This seed goes through the real event store and projection path, so the dataset reflects actual append cost and projection updates instead of direct table inserts.
-
-## Read Path Diagram
+This repository handles that in two layers:
 
 ```text
-open project
-   |
-   v
-GET /snapshot?taskLimit=100
-   |
-   +--> project metadata
-   +--> current version
-   +--> first 100 tasks
-   +--> comments for those tasks
-   |
-   v
-virtualized list mounts visible rows only
-   |
-   v
-scroll boundary reached
-   |
-   v
-GET /tasks?after=<cursor>&limit=100
+initial project render
+  -> first task window only
+
+steady-state collaboration
+  -> committed events over SSE
+
+long task lists
+  -> cursor-paged task windows
+  -> virtualized DOM rendering
 ```
 
-## Task Windowing And Virtualization
+## Read Path Shape
 
 ```text
-loaded tasks in memory:     [page 1][page 2][page 3]...
-mounted in the DOM:              [visible window]
+GET /projects/:id
+  -> project metadata
+  -> first task window (limit 32)
+  -> comments scoped to those task ids
 
-server cost stays bounded because reads are paged
-browser cost stays bounded because rendering is virtualized
+scroll near end of loaded window
+  -> GET /api/projects/:id/tasks?after=<cursor>&limit=32
+  -> merge next task window into local state
+  -> keep only visible rows in the DOM
 ```
 
-## Payload Economics
+Why this matters:
 
-| Situation | Naive sync cost | Shipped sync cost |
-| --- | --- | --- |
-| first open | full project document | project + first task page |
-| live update | resend mutated record set | one committed event |
-| reconnect after brief drop | full refresh | `/events?since=N` |
-| long task list render | mount all rows | mount visible rows only |
+- the browser does not hydrate a 10k-row task list on first load
+- later task pages are stable because paging is ordered by `(position, id)`
+- comment payloads stay scoped to the visible task window
 
-## Measured Scenarios
+## Index Strategy
 
-### 1. Append Throughput
+The Postgres schema is indexed to match the actual hot paths:
 
-Command:
+- `events_project_version_desc_idx` on `(project_id, version desc)` for ordered catch-up reads
+- `events_project_entity_version_idx` on `(project_id, entity_id, version desc)` for entity history and replay support
+- `tasks_project_position_idx` on `(project_id, position)` for cursor-paged task windows
+- `tasks_project_status_position_idx` on `(project_id, status, position)` for status-filtered reads
+- `comments_task_created_at_idx` on `(task_id, created_at)` for scoped comment hydration
+
+Those indexes are defined in [`src/server/db/schema.ts`](../src/server/db/schema.ts) and materialized through [`drizzle/0000_phase1.sql`](../drizzle/0000_phase1.sql).
+
+## Cursor Design
+
+The cursor is a base64url-encoded JSON payload:
+
+```json
+{"position": 42, "id": "task_123"}
+```
+
+That supports stable paging:
+
+```sql
+where (position, id) > ($position, $id)
+order by position asc, id asc
+limit $limit_plus_one
+```
+
+This avoids ambiguity when multiple tasks share the same `position`.
+
+## Virtualized Rendering
+
+The benchmark view uses a virtualized scroll window on top of the loaded task pages:
+
+- the server fetches only the next task page
+- the client renders only the visible slice of the loaded window
+- the first task drops out of the DOM once the user scrolls deep enough into the benchmark list
+
+That means the scale story is not only about API pagination. The browser rendering strategy changes too.
+
+## Write Path Still Stays Incremental
+
+The scale optimization does not change the write model:
+
+- writes still append events
+- projections still update transactionally
+- clients still converge from ordered committed versions
+
+So the scale improvements are read-model improvements, not architectural compromises.
+
+## Local Load Probe Results
+
+Measured on April 12, 2026 against a local production build on loopback:
+
+| Probe | Average | P95 | Min | Max |
+| --- | ---: | ---: | ---: | ---: |
+| Append `task.create` x30 | 43.46 ms | 88.77 ms | 20.40 ms | 143.15 ms |
+| First task page `limit=32` x6 | 29.75 ms | 62.82 ms | 19.14 ms | 62.82 ms |
+| Follow-up task page x6 | 18.28 ms | 22.38 ms | 16.06 ms | 22.38 ms |
+
+See [load-testing.md](./load-testing.md) for the scripts and exact commands.
+
+The benchmark seed is configurable. For the challenge case, the same seed path supports:
 
 ```bash
-ITERATIONS=200 bun load/append-events.ts
+APP_PORT=8100 TASK_COUNT=10000 bun run seed:scale
 ```
 
-Observed result (original k6 multi-VU run):
+An actual `10,000` task seed was run on April 12, 2026 through the real append/projection path and completed in `210.34s`. That is intentionally slower than a bulk loader because it exercises the same event-sourced write path the product uses in production.
 
-- `2,713` successful appends
-- `177.5 req/s`
-- `32.98ms` average request duration
-- `56.06ms p95`
-- `0%` failures
+An actual `30,000` task seed was also run on April 12, 2026 through that same path and completed in `750.71s`.
 
-Interpretation:
+Measured against the resulting `30,000` task project on a local production build:
 
-- append + projection + broadcast stayed comfortably below the sub-100ms target at `p95`
-- optimistic concurrency is preserved because each VU writes to its own project stream in order
+| Probe | Average | P95 | Min | Max |
+| --- | ---: | ---: | ---: | ---: |
+| First task page `limit=32` x6 | 24.63 ms | 75.43 ms | 13.19 ms | 75.43 ms |
+| Follow-up task page x6 | 13.97 ms | 17.31 ms | 12.44 ms | 17.31 ms |
 
-### 2. Paged Initial Load
-
-Command:
-
-```bash
-TASK_COUNT=10000 bun load/task-page.ts
-```
-
-Observed result (original k6 multi-VU run):
-
-- `155.35ms p95`
-- `84.56ms` average HTTP request duration
-- `0%` failures
-
-Interpretation:
-
-- snapshot loading stays bounded because the server returns only the first task window
-- the second page fetch remains cheap enough to keep the browser-side "load more" path responsive
-
-### 3. Reconnect Catch-Up
-
-Measured using a k6 reconnect probe during initial development:
-
-Observed result:
-
-- `44.47ms p95`
-- `32.38ms` average HTTP request duration
-- `0%` failures
-
-Interpretation:
-
-- catch-up requests over `/events?since=N` are significantly cheaper than reshipping a full project
-- the reconnect path stays fast even when the client asks for a recent slice of the event stream repeatedly
-
-### 4. SSE Fanout
-
-Measured using a Node.js SSE fanout probe during initial development:
-
-Observed result:
-
-- `25` live listeners
-- `5` committed events
-- `43.33ms` mean end-to-end delivery latency
-- `115.16ms p95`
-- `115.64ms` max latency
-
-Interpretation:
-
-- the Redis-backed bus plus bounded SSE route preserves sub-120ms delivery to 25 concurrent listeners in a single-process app run
-- this is the "two tabs, then many tabs" proof that the collaboration path stays event-driven instead of snapshot-driven
-
-## Results Table
-
-| Scenario | Measured result | Why it matters |
-| --- | --- | --- |
-| `10,000` task seed | `209,839ms` | proves the real append + projection path can build a large project |
-| append throughput | `177.5 req/s`, `56.06ms p95` | keeps writes comfortably below the sub-100ms optimistic target |
-| paged initial load | `155.35ms p95` | first view stays bounded because the snapshot is windowed |
-| reconnect catch-up | `44.47ms p95` | reconnection is cheaper than full project reloads |
-| SSE fanout | `25` listeners, `115.16ms p95` | live delivery remains fast under concurrent listeners |
-
-## What This Proves
-
-The shipped code now demonstrates:
-
-- large-project snapshots are paged
-- browser rendering stays bounded via virtualization
-- reconnects are event-based, not full-state replays
-- write protection and stream backpressure are in place
-- the Redis path is real and exercised by the app runtime
-
-## Why This Satisfies The 2MB Constraint
-
-The assignment's important scaling question is not just storage volume. It is transmission strategy.
-
-This repo answers that directly:
-
-- full-project payloads are not the steady-state sync unit
-- the first response is intentionally windowed
-- every later mutation is a compact event
-- reconnects request deltas instead of snapshots
-- the browser renders a visible slice, not the full list
-
-That is the reason the product can stay responsive as project size grows.
+The Playwright benchmark test uses a smaller fixture for speed, but the paging and virtualization logic is the same.
 
 ## What Is Still Next
 
-- multi-app-instance load verification behind a shared Redis bus
-- physical event-table partitioning migrations
-- snapshot caching for very hot projects
-- a dedicated SSE fanout load runner that can scale beyond a single local machine
+Shipped here:
 
-Those are next optimizations, not missing foundations.
+- cursor-based task pages
+- virtualized benchmark rendering
+- deterministic ordering and scoped comments
+- lightweight local load probes
+
+Still next:
+
+- Redis-backed cross-instance fan-out
+- multi-node load tests
+- long-running soak and reconnect churn benchmarks
+- true offline replay queues

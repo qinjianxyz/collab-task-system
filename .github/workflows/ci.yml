@@ -1,45 +1,114 @@
-name: CI
+name: collab-task-system
 
 on:
   push:
-    branches:
-      - main
+    paths:
+      - ".github/workflows/ci.yml"
+      - "app/**"
+      - "docs/**"
+      - "drizzle/**"
+      - "package.json"
+      - "playwright.config.ts"
+      - "src/**"
+      - "test/**"
   pull_request:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    paths:
+      - ".github/workflows/ci.yml"
+      - "app/**"
+      - "docs/**"
+      - "drizzle/**"
+      - "package.json"
+      - "playwright.config.ts"
+      - "src/**"
+      - "test/**"
 
 jobs:
   verify:
     runs-on: ubuntu-latest
-    env:
-      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:54329/collab_task_system
-      REDIS_URL: redis://127.0.0.1:6379
-    steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun run test
+    timeout-minutes: 30
 
-  e2e:
-    needs: verify
-    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: collab_task_system
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d collab_task_system"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     env:
-      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:54329/collab_task_system
-      REDIS_URL: redis://127.0.0.1:6379
+      CI: true
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/collab_task_system
+
+    defaults:
+      run:
+        shell: bash
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: "22"
-      - run: bun install --frozen-lockfile
-      - run: bun run test:e2e
+          bun-version: latest
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Wait for Postgres
+        run: |
+          node --input-type=module <<'EOF'
+          import pg from "pg";
+
+          const { Client } = pg;
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+          let lastError;
+          for (let attempt = 1; attempt <= 30; attempt += 1) {
+            const client = new Client({
+              connectionString: process.env.DATABASE_URL,
+            });
+
+            try {
+              await client.connect();
+              await client.query("select 1");
+              await client.end();
+              process.exit(0);
+            } catch (error) {
+              lastError = error;
+              try {
+                await client.end();
+              } catch {
+                // ignore cleanup errors during startup retries
+              }
+              await sleep(2000);
+            }
+          }
+
+          console.error("Postgres did not become ready in time");
+          if (lastError) {
+            console.error(lastError);
+          }
+          process.exit(1);
+          EOF
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit and integration tests
+        run: bun run test
+
+      - name: Install Playwright
+        run: bunx playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: bun run test:e2e

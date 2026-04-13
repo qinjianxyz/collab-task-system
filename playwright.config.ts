@@ -18,7 +18,6 @@ export default defineConfig({
           DATABASE_URL:
             process.env.DATABASE_URL ??
             "postgres://postgres:postgres@localhost:54329/collab_task_system",
-          REDIS_URL: process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
           NODE_ENV: "production",
         },
         url: `http://127.0.0.1:${port}`,

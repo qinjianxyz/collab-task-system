@@ -9,8 +9,8 @@ import { handleRouteError } from "../../../src/server/api/errors";
 import { readJsonBody } from "../../../src/server/api/requests";
 import { publishProjectEvent } from "../../../src/server/realtime/project-stream";
 import {
-  createRateLimitResponse,
   getWriteRateLimiter,
+  RateLimitError,
 } from "../../../src/server/realtime/rate-limiter";
 
 export const runtime = "nodejs";
@@ -19,12 +19,15 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request): Promise<NextResponse> {
   try {
     const body = await readJsonBody(request, createProjectRequestSchema);
-    const rateLimit = await getWriteRateLimiter().check(
-      `project:create:${body.clientId}`,
+    const limit = await getWriteRateLimiter().check(
+      `project-create:${body.userId}:${body.clientId}`,
     );
 
-    if (!rateLimit.allowed) {
-      return createRateLimitResponse(rateLimit);
+    if (!limit.allowed) {
+      throw new RateLimitError(
+        "too many project create requests; retry later",
+        limit.retryAfterMs,
+      );
     }
 
     const projectId = crypto.randomUUID();

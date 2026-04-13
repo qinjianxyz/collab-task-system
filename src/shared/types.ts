@@ -53,21 +53,32 @@ export const commentSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
 });
 
+export const presenceCursorSchema = z.object({
+  kind: z.enum(["task", "comment", "description", "board"]),
+  taskId: z.string().min(1),
+  taskTitle: z.string().min(1),
+  label: z.string().min(1),
+});
+
 export const presenceViewerSchema = z.object({
   clientId: z.string().min(1),
   userId: z.string().min(1),
   location: z.string().min(1),
   connectedAt: z.number().int().nonnegative(),
+  cursor: presenceCursorSchema.optional(),
 });
 
-export const taskCursorSchema = z.string().min(1);
-
-export const projectTaskPageSchema = z.object({
-  tasks: z.array(taskSchema),
-  comments: z.array(commentSchema),
-  nextCursor: taskCursorSchema.nullable(),
-  hasMore: z.boolean(),
-  totalCount: z.number().int().nonnegative(),
+export const mentionNotificationSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  taskId: z.string().min(1),
+  taskTitle: z.string().min(1),
+  commentId: z.string().min(1),
+  userId: z.string().min(1),
+  actorUserId: z.string().min(1),
+  contentPreview: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
 });
 
 const projectCreateActionSchema = z.object({
@@ -152,7 +163,7 @@ const presenceUpdateActionSchema = z.object({
   data: z.object({
     userId: z.string().min(1),
     location: z.string().min(1),
-    cursor: z.unknown().optional(),
+    cursor: presenceCursorSchema.optional(),
   }),
 });
 
@@ -194,28 +205,16 @@ export const projectSnapshotSchema = z.object({
   version: z.number().int().nonnegative(),
 });
 
-export const pagedProjectSnapshotSchema = z.object({
-  project: projectSchema,
-  version: z.number().int().nonnegative(),
-  taskPage: projectTaskPageSchema,
-});
-
-export const loadedProjectSnapshotSchema = projectSnapshotSchema.extend({
-  taskPage: projectTaskPageSchema,
-});
-
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskPriority = z.infer<typeof taskPrioritySchema>;
 export type TaskConfig = z.infer<typeof taskConfigSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type Task = z.infer<typeof taskSchema>;
 export type Comment = z.infer<typeof commentSchema>;
+export type PresenceCursor = z.infer<typeof presenceCursorSchema>;
 export type PresenceViewer = z.infer<typeof presenceViewerSchema>;
-export type TaskCursor = z.infer<typeof taskCursorSchema>;
-export type ProjectTaskPage = z.infer<typeof projectTaskPageSchema>;
+export type MentionNotification = z.infer<typeof mentionNotificationSchema>;
 export type EventAction = z.infer<typeof eventActionSchema>;
 export type ProjectEvent = z.infer<typeof projectEventSchema>;
 export type AppendEventInput = z.infer<typeof appendEventInputSchema>;
 export type ProjectSnapshot = z.infer<typeof projectSnapshotSchema>;
-export type PagedProjectSnapshot = z.infer<typeof pagedProjectSnapshotSchema>;
-export type LoadedProjectSnapshot = z.infer<typeof loadedProjectSnapshotSchema>;

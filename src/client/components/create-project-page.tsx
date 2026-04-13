@@ -4,26 +4,38 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState, useTransition } from "react";
 
-import type { Project } from "../../shared/types";
 import { createProject } from "../api";
 import { getOrCreateClientId, getStoredDisplayName, setStoredDisplayName } from "../identity";
-import { formatProjectUpdatedAt } from "../project-catalog";
-
-type ProjectCatalogEntry = Pick<
-  Project,
-  "id" | "name" | "description" | "currentVersion" | "updatedAt"
->;
+import type { ProjectCatalogEntry } from "../../server/projects/catalog";
 
 type CreateProjectPageProps = {
-  recentProjects?: ProjectCatalogEntry[];
+  existingProjects?: ProjectCatalogEntry[];
 };
 
-export function CreateProjectPage({
-  recentProjects = [],
-}: CreateProjectPageProps) {
+function formatRelativeUpdatedAt(timestamp: number): string {
+  const elapsedMinutes = Math.max(0, Math.round((Date.now() - timestamp) / 60_000));
+
+  if (elapsedMinutes < 1) {
+    return "Updated just now";
+  }
+
+  if (elapsedMinutes < 60) {
+    return `Updated ${elapsedMinutes}m ago`;
+  }
+
+  const elapsedHours = Math.round(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return `Updated ${elapsedHours}h ago`;
+  }
+
+  const elapsedDays = Math.round(elapsedHours / 24);
+  return `Updated ${elapsedDays}d ago`;
+}
+
+export function CreateProjectPage({ existingProjects = [] }: CreateProjectPageProps) {
   const router = useRouter();
   const [displayName, setDisplayName] = useState("");
-  const [projectName, setProjectName] = useState("Demo Project");
+  const [projectName, setProjectName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startNavigation] = useTransition();
 
@@ -59,83 +71,83 @@ export function CreateProjectPage({
 
   return (
     <main className="landing-shell">
-      <section className="landing-grid">
-        <article className="landing-card">
-          <p className="eyebrow">Launch Demo</p>
-          <h1>Event-sourced collaborative task management</h1>
-          <p className="intro-copy">
-            Create a project, open it in two tabs, and watch task, comment, undo, and
-            presence updates converge over the same ordered event stream.
+      <section className="landing-card">
+        <p className="eyebrow">Phase 2 Demo</p>
+        <h1>Event-sourced collaborative task management</h1>
+        <p className="intro-copy">
+          Create a project, reopen it in another browser context, and watch the event
+          stream converge in real time over SSE without reloading the whole dataset.
+        </p>
+
+        <form className="stack-form" onSubmit={handleSubmit}>
+          <label className="field">
+            <span>Display name</span>
+            <input
+              autoComplete="nickname"
+              className="text-input"
+              onChange={(event) => setDisplayName(event.target.value)}
+              placeholder="alice"
+              value={displayName}
+            />
+          </label>
+
+          <label className="field">
+            <span>Project name</span>
+            <input
+              className="text-input"
+              onChange={(event) => setProjectName(event.target.value)}
+              placeholder="Ship Collab Task System"
+              value={projectName}
+            />
+          </label>
+
+          <button className="primary-button" disabled={isPending} type="submit">
+            {isPending ? "Creating project..." : "Create project"}
+          </button>
+        </form>
+
+        {error ? <p className="error-banner">{error}</p> : null}
+      </section>
+
+      <section className="landing-card project-catalog-card">
+        <div className="catalog-header">
+          <div>
+            <p className="eyebrow">Projects</p>
+            <h2>Open an existing workspace</h2>
+          </div>
+          <p className="subtle-copy">
+            {existingProjects.length} project{existingProjects.length === 1 ? "" : "s"} ready for
+            live collaboration.
           </p>
+        </div>
 
-          <form className="stack-form" onSubmit={handleSubmit}>
-            <label className="field">
-              <span>Display name</span>
-              <input
-                autoComplete="nickname"
-                className="text-input"
-                onChange={(event) => setDisplayName(event.target.value)}
-                placeholder="alice"
-                value={displayName}
-              />
-            </label>
+        {existingProjects.length > 0 ? (
+          <div className="project-catalog">
+            {existingProjects.map((project) => (
+              <Link className="project-catalog-item" href={`/projects/${project.id}`} key={project.id}>
+                <div className="project-catalog-copy">
+                  <strong>{project.name}</strong>
+                  {project.description ? (
+                    <p>{project.description}</p>
+                  ) : (
+                    <p>No description yet.</p>
+                  )}
+                </div>
 
-            <label className="field">
-              <span>Project name</span>
-              <input
-                className="text-input"
-                onChange={(event) => setProjectName(event.target.value)}
-                placeholder="Demo Project"
-                value={projectName}
-              />
-            </label>
-
-            <button className="primary-button" disabled={isPending} type="submit">
-              {isPending ? "Creating project..." : "Create project"}
-            </button>
-          </form>
-
-          {error ? <p className="error-banner">{error}</p> : null}
-        </article>
-
-        <article className="landing-card recent-projects-card">
-          <p className="eyebrow">Project Catalog</p>
-          <h2>Recent projects</h2>
-          <p className="intro-copy">
-            Open an existing workspace directly or create a fresh one from the form.
+                <div className="project-catalog-meta">
+                  <span>{project.taskCount} tasks</span>
+                  <span>Version {project.currentVersion}</span>
+                  <span>{formatRelativeUpdatedAt(project.updatedAt)}</span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        ) : (
+          <p className="subtle-copy">
+            No projects yet. Create one above, then open it in two browser contexts to
+            demo real-time convergence.
           </p>
-
-          {recentProjects.length > 0 ? (
-            <div className="recent-project-list">
-              {recentProjects.map((project) => (
-                <Link
-                  aria-label={`Open ${project.name}`}
-                  className="recent-project-item"
-                  href={`/projects/${project.id}`}
-                  key={project.id}
-                >
-                  <div className="recent-project-copy">
-                    <strong>{project.name}</strong>
-                    <span>
-                      {project.description?.trim()
-                        ? project.description
-                        : `Version ${project.currentVersion}`}
-                    </span>
-                  </div>
-                  <div className="recent-project-meta">
-                    <span>{formatProjectUpdatedAt(project.updatedAt)}</span>
-                    <span className="recent-project-action">Open workspace</span>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          ) : (
-            <p className="subtle-copy">
-              No projects yet. Create one, then reopen this page to see the workspace
-              catalog.
-            </p>
-          )}
-        </article>
+        )}
       </section>
     </main>
   );

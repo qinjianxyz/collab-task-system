@@ -37,8 +37,12 @@ export async function resetDatabase(): Promise<void> {
   const client = await pool.connect();
 
   try {
-    await client.query("DROP SCHEMA IF EXISTS public CASCADE");
-    await client.query("CREATE SCHEMA public");
+    await client.query("DROP TABLE IF EXISTS schema_migrations CASCADE");
+    await client.query("DROP TABLE IF EXISTS notifications CASCADE");
+    await client.query("DROP TABLE IF EXISTS comments CASCADE");
+    await client.query("DROP TABLE IF EXISTS tasks CASCADE");
+    await client.query("DROP TABLE IF EXISTS events CASCADE");
+    await client.query("DROP TABLE IF EXISTS projects CASCADE");
   } finally {
     client.release();
   }

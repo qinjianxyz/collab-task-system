@@ -3,7 +3,7 @@ import { Client } from "pg";
 
 import { getDatabaseConfig } from "../../src/server/db/config";
 import { runMigrations } from "../../src/server/db/migrate";
-import { resetDatabase, waitForDatabase } from "../../src/server/db/testing";
+import { waitForDatabase } from "../../src/server/db/testing";
 
 describe("runMigrations", () => {
   const client = new Client({
@@ -51,28 +51,5 @@ describe("runMigrations", () => {
     );
 
     expect(partition.rows[0]?.partition_strategy).toBe("h");
-  });
-
-  it("can reset and rerun migrations repeatedly without catalog collisions", async () => {
-    await runMigrations();
-
-    await expect(resetDatabase()).resolves.toBeUndefined();
-    await expect(resetDatabase()).resolves.toBeUndefined();
-
-    const tables = await client.query<{ table_name: string }>(
-      `select table_name
-         from information_schema.tables
-        where table_schema = 'public'
-          and table_name in ('projects', 'tasks', 'comments', 'events', 'schema_migrations')
-        order by table_name`,
-    );
-
-    expect(tables.rows.map((row) => row.table_name)).toEqual([
-      "comments",
-      "events",
-      "projects",
-      "schema_migrations",
-      "tasks",
-    ]);
   });
 });

@@ -1,67 +1,53 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-describe("write rate limiter", () => {
-  afterEach(() => {
-    vi.resetModules();
-    vi.unstubAllEnvs();
+describe("in-memory rate limiter", () => {
+  beforeEach(async () => {
+    const { resetRateLimiterForTests } = await import(
+      "../../src/server/realtime/rate-limiter"
+    );
+    resetRateLimiterForTests();
   });
 
-  it("tracks per-key fixed windows in memory", async () => {
-    const { createWriteRateLimiter } = await import(
+  it("allows requests up to the configured limit and then denies with retryAfterMs", async () => {
+    const { createInMemoryRateLimiter } = await import(
       "../../src/server/realtime/rate-limiter"
     );
 
-    const limiter = createWriteRateLimiter({
-      limit: 2,
-      windowMs: 1_000,
+    const limiter = createInMemoryRateLimiter({
+      maxRequests: 2,
+      windowMs: 60_000,
     });
 
-    const first = await limiter.check("project:create:client_alpha");
-    const second = await limiter.check("project:create:client_alpha");
-    const third = await limiter.check("project:create:client_alpha");
+    await expect(limiter.check("user:alice")).resolves.toMatchObject({
+      allowed: true,
+    });
+    await expect(limiter.check("user:alice")).resolves.toMatchObject({
+      allowed: true,
+    });
 
-    expect(first.allowed).toBe(true);
-    expect(second.allowed).toBe(true);
-    expect(third.allowed).toBe(false);
-    expect(third.retryAfterSeconds).toBeGreaterThan(0);
+    const denied = await limiter.check("user:alice");
+    expect(denied.allowed).toBe(false);
+    expect(denied.retryAfterMs).toBeGreaterThan(0);
   });
 
-  it("selects the redis-backed limiter when REDIS_URL is configured", async () => {
-    vi.stubEnv("REDIS_URL", "redis://localhost:6379");
-
-    const { createWriteRateLimiter, RedisWriteRateLimiter } = await import(
+  it("tracks keys independently", async () => {
+    const { createInMemoryRateLimiter } = await import(
       "../../src/server/realtime/rate-limiter"
     );
 
-    const limiter = createWriteRateLimiter({
-      limit: 2,
-      windowMs: 1_000,
+    const limiter = createInMemoryRateLimiter({
+      maxRequests: 1,
+      windowMs: 60_000,
     });
 
-    expect(limiter).toBeInstanceOf(RedisWriteRateLimiter);
-  });
-
-  it("fails open to the in-memory limiter when the redis limiter errors", async () => {
-    vi.stubEnv("REDIS_URL", "redis://localhost:6379");
-
-    const rateLimiterModule = await import(
-      "../../src/server/realtime/rate-limiter"
-    );
-    const checkSpy = vi
-      .spyOn(rateLimiterModule.RedisWriteRateLimiter.prototype, "check")
-      .mockRejectedValue(new Error("redis unavailable"));
-
-    const limiter = rateLimiterModule.createWriteRateLimiter({
-      limit: 1,
-      windowMs: 1_000,
+    await expect(limiter.check("user:alice")).resolves.toMatchObject({
+      allowed: true,
     });
-
-    const first = await limiter.check("project:create:client_alpha");
-    const second = await limiter.check("project:create:client_alpha");
-
-    expect(first.allowed).toBe(true);
-    expect(second.allowed).toBe(false);
-
-    checkSpy.mockRestore();
+    await expect(limiter.check("user:bob")).resolves.toMatchObject({
+      allowed: true,
+    });
+    await expect(limiter.check("user:alice")).resolves.toMatchObject({
+      allowed: false,
+    });
   });
 });

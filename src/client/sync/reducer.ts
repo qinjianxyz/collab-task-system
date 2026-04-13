@@ -1,65 +1,33 @@
 import type {
   AppendEventInput,
   Comment,
-  LoadedProjectSnapshot,
   ProjectEvent,
-  ProjectTaskPage,
   ProjectSnapshot,
   Task,
   TaskStatus,
 } from "../../shared/types";
-
-export type ReducerSnapshot = ProjectSnapshot | LoadedProjectSnapshot;
 
 function extractMentions(content: string): string[] {
   const mentions = content.match(/@([a-zA-Z0-9_-]+)/g) ?? [];
   return [...new Set(mentions.map((mention) => mention.slice(1)))];
 }
 
-function isLoadedSnapshot(snapshot: ReducerSnapshot): snapshot is LoadedProjectSnapshot {
-  return "taskPage" in snapshot;
-}
-
-function sortTasks(tasks: Task[]): Task[] {
-  return [...tasks].sort(
-    (left, right) => left.position - right.position || left.id.localeCompare(right.id),
-  );
-}
-
-function sortComments(comments: Comment[]): Comment[] {
-  return [...comments].sort(
-    (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
-  );
-}
-
-function sortSnapshot<T extends ReducerSnapshot>(snapshot: T): T {
-  const tasks = sortTasks(snapshot.tasks);
-  const comments = sortComments(snapshot.comments);
-
-  if (isLoadedSnapshot(snapshot)) {
-    return {
-      ...snapshot,
-      tasks,
-      comments,
-      taskPage: {
-        ...snapshot.taskPage,
-        tasks,
-        comments,
-      },
-    } as T;
-  }
-
+function sortSnapshot(snapshot: ProjectSnapshot): ProjectSnapshot {
   return {
     ...snapshot,
-    tasks,
-    comments,
-  } as T;
+    tasks: [...snapshot.tasks].sort(
+      (left, right) => left.position - right.position || left.id.localeCompare(right.id),
+    ),
+    comments: [...snapshot.comments].sort(
+      (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+    ),
+  };
 }
 
-function withVersion<T extends ReducerSnapshot>(
-  snapshot: T,
+function withVersion(
+  snapshot: ProjectSnapshot,
   event: ProjectEvent,
-): T {
+): ProjectSnapshot {
   const version = Math.max(snapshot.version, event.version);
 
   return {
@@ -70,37 +38,18 @@ function withVersion<T extends ReducerSnapshot>(
       updatedAt: event.timestamp,
     },
     version,
-  } as T;
-}
-
-function withTaskPageMeta(
-  snapshot: LoadedProjectSnapshot,
-  overrides: Partial<Omit<ProjectTaskPage, "tasks" | "comments">>,
-): LoadedProjectSnapshot {
-  return {
-    ...snapshot,
-    taskPage: {
-      ...snapshot.taskPage,
-      tasks: snapshot.tasks,
-      comments: snapshot.comments,
-      ...overrides,
-    },
   };
-}
-
-function compareTasks(left: Pick<Task, "id" | "position">, right: Pick<Task, "id" | "position">): number {
-  return left.position - right.position || left.id.localeCompare(right.id);
 }
 
 type ApplyOptions = {
   ignoreVersionGuard?: boolean;
 };
 
-export function applyProjectEvent<T extends ReducerSnapshot>(
-  snapshot: T,
+export function applyProjectEvent(
+  snapshot: ProjectSnapshot,
   event: ProjectEvent,
   options: ApplyOptions = {},
-): T {
+): ProjectSnapshot {
   if (!options.ignoreVersionGuard && event.version <= snapshot.version) {
     return snapshot;
   }
@@ -120,7 +69,7 @@ export function applyProjectEvent<T extends ReducerSnapshot>(
         tasks: [],
         comments: [],
         version: event.version,
-      } as unknown as T;
+      };
     case "project.update":
       return sortSnapshot(
         withVersion(
@@ -159,47 +108,6 @@ export function applyProjectEvent<T extends ReducerSnapshot>(
         updatedAt: event.timestamp,
       };
 
-      if (isLoadedSnapshot(snapshot)) {
-        const alreadyLoaded = snapshot.tasks.some((task) => task.id === event.entityId);
-        const nextTotalCount = alreadyLoaded
-          ? snapshot.taskPage.totalCount
-          : snapshot.taskPage.totalCount + 1;
-        const lastLoadedTask = snapshot.tasks.at(-1);
-
-        if (
-          snapshot.taskPage.hasMore &&
-          lastLoadedTask &&
-          compareTasks(nextTask, lastLoadedTask) > 0
-        ) {
-          return sortSnapshot(
-            withVersion(
-              withTaskPageMeta(snapshot, {
-                totalCount: nextTotalCount,
-              }),
-              event,
-            ),
-          ) as T;
-        }
-
-        return sortSnapshot(
-          withVersion(
-            withTaskPageMeta(
-              {
-                ...snapshot,
-                tasks: [
-                  ...snapshot.tasks.filter((task) => task.id !== event.entityId),
-                  nextTask,
-                ],
-              } as LoadedProjectSnapshot,
-              {
-                totalCount: nextTotalCount,
-              },
-            ),
-            event,
-          ),
-        ) as T;
-      }
-
       return sortSnapshot(
         withVersion(
           {
@@ -216,7 +124,7 @@ export function applyProjectEvent<T extends ReducerSnapshot>(
     case "task.update": {
       const existingTask = snapshot.tasks.find((task) => task.id === event.entityId);
       if (!existingTask) {
-        return sortSnapshot(withVersion(snapshot, event));
+        return snapshot;
       }
 
       const nextTask: Task = {
@@ -254,32 +162,7 @@ export function applyProjectEvent<T extends ReducerSnapshot>(
         ),
       );
     }
-    case "task.delete": {
-      if (isLoadedSnapshot(snapshot)) {
-        const nextTasks = snapshot.tasks.filter((task) => task.id !== event.entityId);
-        const nextComments = snapshot.comments.filter((comment) => comment.taskId !== event.entityId);
-        const nextTotalCount = Math.max(0, snapshot.taskPage.totalCount - 1);
-
-        return sortSnapshot(
-          withVersion(
-            withTaskPageMeta(
-              {
-                ...snapshot,
-                tasks: nextTasks,
-                comments: nextComments,
-              } as LoadedProjectSnapshot,
-              {
-                totalCount: nextTotalCount,
-                hasMore: nextTotalCount > nextTasks.length,
-                nextCursor:
-                  nextTotalCount > nextTasks.length ? snapshot.taskPage.nextCursor : null,
-              },
-            ),
-            event,
-          ),
-        ) as T;
-      }
-
+    case "task.delete":
       return sortSnapshot(
         withVersion(
           {
@@ -290,26 +173,13 @@ export function applyProjectEvent<T extends ReducerSnapshot>(
           event,
         ),
       );
-    }
     case "comment.create": {
-      const actionData = event.action.data as Extract<
-        ProjectEvent["action"],
-        { type: "comment.create" }
-      >["data"];
-
-      if (
-        isLoadedSnapshot(snapshot) &&
-        !snapshot.tasks.some((task) => task.id === actionData.taskId)
-      ) {
-        return sortSnapshot(withVersion(snapshot, event));
-      }
-
       const nextComment: Comment = {
         id: event.entityId,
-        taskId: actionData.taskId,
-        content: actionData.content,
-        author: actionData.author,
-        mentions: extractMentions(actionData.content),
+        taskId: event.action.data.taskId,
+        content: event.action.data.content,
+        author: event.action.data.author,
+        mentions: extractMentions(event.action.data.content),
         createdAt: event.timestamp,
         updatedAt: event.timestamp,
       };
@@ -332,7 +202,7 @@ export function applyProjectEvent<T extends ReducerSnapshot>(
         (comment) => comment.id === event.entityId,
       );
       if (!existingComment) {
-        return sortSnapshot(withVersion(snapshot, event));
+        return snapshot;
       }
 
       const content = event.action.data.content;
@@ -357,13 +227,6 @@ export function applyProjectEvent<T extends ReducerSnapshot>(
       );
     }
     case "comment.delete":
-      if (
-        isLoadedSnapshot(snapshot) &&
-        !snapshot.comments.some((comment) => comment.id === event.entityId)
-      ) {
-        return sortSnapshot(withVersion(snapshot, event));
-      }
-
       return sortSnapshot(
         withVersion(
           {
@@ -379,7 +242,7 @@ export function applyProjectEvent<T extends ReducerSnapshot>(
 }
 
 export function buildOptimisticEvent(
-  snapshot: ReducerSnapshot,
+  snapshot: ProjectSnapshot,
   input: AppendEventInput,
 ): ProjectEvent {
   return {
@@ -395,10 +258,10 @@ export function buildOptimisticEvent(
   };
 }
 
-export function deriveVisibleSnapshot<T extends ReducerSnapshot>(
-  snapshot: T,
+export function deriveVisibleSnapshot(
+  snapshot: ProjectSnapshot,
   optimisticEvent: ProjectEvent | null,
-): T {
+): ProjectSnapshot {
   if (!optimisticEvent) {
     return snapshot;
   }
@@ -406,33 +269,4 @@ export function deriveVisibleSnapshot<T extends ReducerSnapshot>(
   return applyProjectEvent(snapshot, optimisticEvent, {
     ignoreVersionGuard: true,
   });
-}
-
-export function mergeTaskPage(
-  snapshot: LoadedProjectSnapshot,
-  page: ProjectTaskPage,
-): LoadedProjectSnapshot {
-  const tasks = new Map(snapshot.tasks.map((task) => [task.id, task]));
-  for (const task of page.tasks) {
-    tasks.set(task.id, task);
-  }
-
-  const comments = new Map(snapshot.comments.map((comment) => [comment.id, comment]));
-  for (const comment of page.comments) {
-    comments.set(comment.id, comment);
-  }
-
-  return sortSnapshot({
-    ...snapshot,
-    tasks: [...tasks.values()],
-    comments: [...comments.values()],
-    taskPage: {
-      ...snapshot.taskPage,
-      tasks: [...tasks.values()],
-      comments: [...comments.values()],
-      nextCursor: page.nextCursor,
-      hasMore: page.hasMore,
-      totalCount: page.totalCount,
-    },
-  }) as LoadedProjectSnapshot;
 }

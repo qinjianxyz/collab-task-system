@@ -1,182 +1,37 @@
-# Video Script
+# Demo Video Script
 
-Use this as the primary recording script.
+This is Collab Task System. It is a collaborative task manager built with Next.js, Postgres, Redis-capable realtime infrastructure, and server-sent events. The key architectural decision is that it is event-sourced instead of CRUD-first. Durable change becomes an event, and the current task state, realtime sync, undo and redo, activity, and mention notifications all derive from that same ordered stream.
 
-## Pre-Recording Setup
+I’m starting with the realistic demo project. This project is called Ship Collab Task System, and it is seeded with believable work instead of synthetic benchmark-only data. You can see real task names, owners, comments, dependency chains, and a mix of done, in-progress, todo, and blocked work.
 
-Run the app before you start recording:
+I’m opening the same project in a second browser context now. I’m using two browser contexts instead of two tabs in one profile so presence is visible as two distinct viewers. I’ll set different display names in each window, and now you can see both viewers in the header.
 
-```bash
-docker compose up --build
-```
+Now I’m going to create a new task. I’ll call it Final README polish. Under Blocked by, I can choose prerequisite tasks. This is an important UX detail. These controls do not mean complete. They mean this new task depends on these existing tasks. I’ll choose a prerequisite and create the task.
 
-If you want the same port used on this machine:
+As soon as I submit, the task appears in the second browser context. That is the core collaboration path. One client posts an append command, the server validates it, commits the next event, updates the projection tables in the same transaction, and then broadcasts the committed event over SSE so the other client converges.
 
-```bash
-APP_PORT=8100 docker compose up --build
-```
+Now I’ll change status in the second browser context. The first browser context updates almost immediately. Next I’ll focus the comment box in one browser context. The other browser context immediately shows a live cursor badge on that task, so you can see who is actively working where.
 
-Seed a large project in a second terminal:
+I’ll add a comment with an @mention now. The other browser context gets the comment, and the notification panel updates from a durable projection over the same comment stream. There is no separate notification write path behind it.
 
-```bash
-TASK_COUNT=10000 bun run seed:scale
-```
+Now I’ll edit the task description. This is not just a normal textarea with last-write-wins. The description is backed by a task-scoped Yjs document, so the second browser context sees the text converge live. Durable checkpoints still come back through normal task.update events, which keeps the long-term state inside the same event-sourced model.
 
-Keep the returned `projectId` for the scale segment.
+I’ll also edit and then delete the comment. The activity feed on the right updates from the same event stream. There is no separate audit subsystem behind it. It is just another projection over the project history.
 
-Also seed the realistic demo project:
+Undo and redo use the same write model. I’ll undo and then redo. The important point is that undo here is not a client-only trick. The client computes the inverse action and sends it back through the normal append route, so history remains explicit and consistent with the rest of the system.
 
-```bash
-bun run seed:demo
-```
+I also want to show the domain rules. This task here is blocked by a prerequisite that is not done yet. If I try to move it forward too early, the server rejects the transition. That matters because optimistic UI is only safe if the server is still the authority on consistency and domain validation. The client can feel fast, but invalid state does not get committed.
 
-Open:
+Before leaving the realistic project, I’ll switch into Board view and drag a card across columns. That move still becomes a normal task.update event with a new status and position. The second browser context converges because the board is just another projection over the same task model, not a separate subsystem.
 
-- one normal browser window
-- one incognito window or separate profile
+Now I’m going to the README, because this is the document an evaluator can read after the demo and understand both the product and the system design. The first section explains what the product can do today: multi-project entry, task and comment lifecycle, dependencies, realtime sync, live cursors, collaborative descriptions, notifications, undo and redo, presence, activity, board view, paged task reads, and virtualized benchmark rendering.
 
-That matters because demo identity is stored in browser storage, so presence is clearer with isolated contexts.
+The next important section is Architecture At A Glance. This is the heart of the project. The client sends an append command. The server appends the event and applies the projection update in the same SQL transaction. After commit, the server broadcasts the committed event over SSE. That is why the two browser contexts stay in sync without a managed realtime backend.
 
-## 0:00-0:30 Framing
+The Why Event Sourcing Instead Of CRUD section is the main thesis of the submission. The reason this is stronger than a CRUD app with realtime bolted on is that the event stream becomes the single source of truth for durable change. Realtime sync uses it directly. Undo and redo use it directly. The activity feed uses it directly. Notifications use it directly. Conflict handling also becomes clearer because the system uses ordered project versions and optimistic concurrency instead of silently letting clients overwrite each other. The ephemeral collaboration layers, like cursors and Yjs text sync, stay thin and focused instead of turning into a second database.
 
-On screen:
+Now I’m switching to the scale benchmark project. This project is intentionally synthetic. Its job is not to tell a human story. Its job is to show that the read path still makes sense once the project is much larger. On first load, the workspace does not hydrate the entire task list. It renders the first task window, and as I scroll, the next page is fetched by cursor. The benchmark list is also virtualized, so the DOM only holds the visible rows instead of every loaded row at once. The repository also includes heavier seed runs at ten thousand and thirty thousand tasks to show that the scale claim is not just theoretical.
 
-- [README.md](../../README.md)
+That scale story is documented in the scaling notes and backed by load probes in the repository. The important point is that the write model did not change to get there. Writes are still events, projections are still transactional, and clients still converge by committed version.
 
-Say:
-
-“Collab Task System is an event-sourced collaborative task manager built with Next.js, PostgreSQL, Redis, and server-sent events. The core idea is that sync, activity, undo and redo, and collaboration all derive from one ordered event stream instead of being separate bolt-on subsystems.”
-
-Then scroll briefly to:
-
-- `What You'll See`
-- `Architecture At A Glance`
-- `Scale Proof`
-
-Say:
-
-“The take-home asks for real-time collaboration, consistency, and a path to large project payloads without a managed real-time database. This repo is built specifically around that.”
-
-## 0:30-2:15 Live Collaboration Demo
-
-On screen:
-
-- app running in two isolated browser contexts
-
-Actions:
-
-1. In window one, set a display name and create a new project.
-2. Open the same project in window two.
-3. Add a task in window one.
-4. Wait for it to appear in window two.
-5. Change the task status in window two.
-6. Wait for window one to update.
-7. Add a comment.
-8. Confirm both windows show the comment.
-
-Say:
-
-“Here the client applies an optimistic change immediately, posts an event to the server, and the server commits that event transactionally with the projection update. After commit, the event is broadcast over SSE so the other client converges without reloading the full project.”
-
-Call out explicitly:
-
-“Nothing here uses Firebase, Supabase, or a managed realtime database.”
-
-## 2:15-3:15 Collaboration Features
-
-On screen:
-
-- project header
-- activity feed
-- task list
-
-Actions:
-
-1. Point at the presence chips.
-2. Point at the activity feed.
-3. Use `Ctrl+Z` to undo the last task change.
-4. Use `Ctrl+Shift+Z` to redo it.
-5. Press `?` to open shortcuts help.
-
-Say:
-
-“Undo and redo are normal inverse events. The server stays agnostic; it just validates and appends events. Activity is another projection over the same stream, and presence is an ephemeral SSE-backed collaboration layer.”
-
-## 3:15-4:00 Domain Rules
-
-Actions:
-
-1. Create task `Fix auth`.
-2. Create task `Ship dashboard`.
-3. Add `Fix auth` as a dependency of `Ship dashboard`.
-4. Attempt to move `Ship dashboard` to `in_progress`.
-5. Show the blocked transition error.
-6. Complete `Fix auth`.
-7. Retry the status change successfully.
-
-Say:
-
-“Task dependencies are enforced on the write path. The server validates the DAG and blocks invalid status transitions transactionally, so every client stays consistent.”
-
-If useful, add:
-
-“That matters because this is not eventually-correct UI logic. The domain rule is enforced at the append boundary.”
-
-## 4:00-4:35 Scale Proof
-
-On screen:
-
-- seeded large project using the `projectId` from the seed script
-
-Actions:
-
-1. Open the large project.
-2. Scroll through the task list quickly.
-3. Show that the UI stays responsive.
-4. Optionally trigger loading the next page if it is not already visible.
-
-Then open:
-
-- [scaling.md](../scaling.md)
-
-Point briefly at:
-
-- `Scale Posture At A Glance`
-- `Results Table`
-
-Say:
-
-“The take-home assumes projects can eventually exceed two megabytes. This system handles that by shipping paged snapshots, cursor-based task windows, virtualized rendering, and reconnect catch-up through incremental events instead of full document reloads.”
-
-Point to the measured results and say:
-
-“Load probes and the seed script are checked into the repo, so the scale claims are backed by runnable artifacts.”
-
-## 4:35-5:00 Architecture And Close
-
-Open:
-
-- [architecture.md](../architecture.md)
-
-Point to:
-
-- `Architecture In One Picture`
-- `Write Path`
-- `Reconnect And Catch-Up`
-
-Then say:
-
-“The write path is: optimistic client action, `POST /events`, append plus projection in one SQL transaction, then publish the committed event to the project event bus and fan it out over SSE.”
-
-Then briefly show:
-
-- [api.md](../api.md)
-- [README.md](../../README.md)
-
-Say:
-
-“Operationally, the repo is Dockerized, tested at the unit, integration, and end-to-end levels, and documented as an OSS project. The current tradeoffs are demo identity instead of full auth, ephemeral presence, and Redis-backed abstractions that are exercised in automation without a full multi-node app cluster.”
-
-Close with:
-
-“The important architectural difference is that collaboration, sync, and history are all projections over one event stream. That is what makes this a better fit for large, collaborative task management than a traditional CRUD design.”
+So the summary is straightforward. This repository solves the take-home as a collaborative system, not just a CRUD demo. It shows realtime cross-client sync, live cursors, collaborative descriptions, notifications, consistency through ordered event commits, transactional projections, dependency validation, task and comment lifecycle, activity, presence, undo and redo, board drag-and-drop, and a read path that is honest about larger projects. That is why this is the right architecture for the problem.

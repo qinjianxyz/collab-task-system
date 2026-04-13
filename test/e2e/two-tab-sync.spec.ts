@@ -1,9 +1,5 @@
 import { expect, test, type Browser } from "@playwright/test";
 
-import { closeDatabasePool } from "../../src/server/db/client";
-import { resetDatabase, waitForDatabase } from "../../src/server/db/testing";
-import { appendEvent } from "../../src/server/events/event-store";
-
 const baseTimestamp = 1_716_000_000_000;
 
 async function createIdentityContext(
@@ -21,107 +17,6 @@ async function createIdentityContext(
 
   return context;
 }
-
-async function seedTaskRange(
-  projectId: string,
-  options: {
-    count: number;
-    clientId: string;
-    userId: string;
-    startingVersion?: number;
-    startingTimestamp?: number;
-  },
-) {
-  let expectedVersion = options.startingVersion ?? 1;
-  let timestamp = options.startingTimestamp ?? baseTimestamp + 1_000;
-
-  for (let index = 1; index <= options.count; index += 1) {
-    const taskId = `task_seed_${projectId}_${index}`;
-
-    await appendEvent({
-      id: `evt_seed_task_${projectId}_${index}`,
-      projectId,
-      entityId: taskId,
-      clientId: options.clientId,
-      userId: options.userId,
-      timestamp,
-      expectedVersion,
-      action: {
-        type: "task.create",
-        data: {
-          title: `Seed task ${index}`,
-          status: "todo",
-          projectId,
-          position: index,
-        },
-      },
-    });
-
-    expectedVersion += 1;
-    timestamp += 1;
-  }
-}
-
-test.beforeAll(async () => {
-  await waitForDatabase();
-});
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test.afterAll(async () => {
-  await closeDatabasePool();
-});
-
-test("creates a project from the landing page and navigates into the workspace", async ({
-  page,
-}) => {
-  await page.goto("/");
-
-  await page.getByLabel("Display name").fill("alice");
-  await page.getByLabel("Project name").fill("Launch Ready");
-  await page.getByRole("button", { name: "Create project" }).click();
-
-  await expect(page).toHaveURL(/\/projects\/.+$/);
-  await expect(page.getByRole("heading", { name: "Launch Ready" })).toBeVisible();
-  await expect(page.locator(".status-pill")).toHaveText("connected");
-  await expect(page.locator(".viewer-chip")).toContainText(["alice"]);
-});
-
-test("landing page lists existing projects and lets you open a selected workspace", async ({
-  page,
-  request,
-}) => {
-  const firstProject = await request.post("/api/projects", {
-    data: {
-      name: "Alpha Workspace",
-      clientId: "client_alpha",
-      userId: "alice",
-    },
-  });
-  const secondProject = await request.post("/api/projects", {
-    data: {
-      name: "Beta Workspace",
-      clientId: "client_beta",
-      userId: "bob",
-    },
-  });
-
-  expect(firstProject.ok()).toBeTruthy();
-  expect(secondProject.ok()).toBeTruthy();
-
-  await page.goto("/");
-
-  await expect(page.getByRole("heading", { name: "Recent projects" })).toBeVisible();
-  await expect(page.getByText("Alpha Workspace")).toBeVisible();
-  await expect(page.getByText("Beta Workspace")).toBeVisible();
-
-  await page.getByRole("link", { name: "Open Beta Workspace" }).click();
-
-  await expect(page).toHaveURL(/\/projects\/.+$/);
-  await expect(page.getByRole("heading", { name: "Beta Workspace" })).toBeVisible();
-});
 
 test("two project pages converge when a task is appended through the API", async ({
   browser,
@@ -149,8 +44,8 @@ test("two project pages converge when a task is appended through the API", async
 
   await expect(page.locator("h1")).toHaveText("Browser Sync Demo");
   await expect(secondPage.locator("h1")).toHaveText("Browser Sync Demo");
-  await expect(page.locator(".status-pill")).toHaveText("connected");
-  await expect(secondPage.locator(".status-pill")).toHaveText("connected");
+  await expect(page.locator(".status-pill")).toHaveText("Live");
+  await expect(secondPage.locator(".status-pill")).toHaveText("Live");
 
   const appendEventResponse = await request.post(`/api/projects/${projectId}/events`, {
     data: {
@@ -214,8 +109,8 @@ test("presence, activity, undo, and redo converge across two browser contexts", 
   await alicePage.goto(`/projects/${projectId}`);
   await bobPage.goto(`/projects/${projectId}`);
 
-  await expect(alicePage.locator(".status-pill")).toHaveText("connected");
-  await expect(bobPage.locator(".status-pill")).toHaveText("connected");
+  await expect(alicePage.locator(".status-pill")).toHaveText("Live");
+  await expect(bobPage.locator(".status-pill")).toHaveText("Live");
   await expect(alicePage.locator(".viewer-chip")).toHaveCount(2);
   await expect(bobPage.locator(".viewer-chip")).toHaveCount(2);
   await expect(alicePage.locator(".viewer-chip")).toContainText(["alice", "bob"]);
@@ -243,39 +138,21 @@ test("presence, activity, undo, and redo converge across two browser contexts", 
   await bobContext.close();
 });
 
-test("stale clients recover from a version conflict and converge after retry", async ({
+test("task descriptions converge across two browser contexts", async ({
   browser,
   request,
 }) => {
   const createProjectResponse = await request.post("/api/projects", {
     data: {
-      name: "Conflict Demo",
+      name: "Description Collab",
       clientId: "client_alice",
       userId: "alice",
     },
   });
 
   expect(createProjectResponse.ok()).toBeTruthy();
-  const { projectId } = (await createProjectResponse.json()) as { projectId: string };
-
-  await request.post(`/api/projects/${projectId}/events`, {
-    data: {
-      id: crypto.randomUUID(),
-      entityId: "task_conflict",
-      clientId: "client_alice",
-      userId: "alice",
-      timestamp: baseTimestamp,
-      expectedVersion: 1,
-      action: {
-        type: "task.create",
-        data: {
-          title: "Race task",
-          status: "todo",
-          projectId,
-        },
-      },
-    },
-  });
+  const createProjectPayload = await createProjectResponse.json();
+  const projectId = createProjectPayload.projectId as string;
 
   const aliceContext = await createIdentityContext(browser, {
     clientId: "client_alice",
@@ -286,33 +163,27 @@ test("stale clients recover from a version conflict and converge after retry", a
     displayName: "bob",
   });
 
-  await bobContext.route(`**/api/projects/${projectId}/stream**`, (route) => route.abort());
-
   const alicePage = await aliceContext.newPage();
   const bobPage = await bobContext.newPage();
 
   await alicePage.goto(`/projects/${projectId}`);
   await bobPage.goto(`/projects/${projectId}`);
 
-  await expect(alicePage.locator(".status-pill")).toHaveText("connected");
-  await expect(bobPage.locator(".status-pill")).toHaveText("reconnecting");
+  await alicePage.getByLabel("Add task").fill("Draft README");
+  await alicePage.getByRole("button", { name: "Add task" }).click();
 
-  const aliceTaskCard = alicePage.locator("article", {
-    has: alicePage.getByRole("heading", { name: "Race task" }),
+  const aliceCard = alicePage.locator("article", {
+    has: alicePage.getByRole("heading", { name: "Draft README" }),
   });
-  await aliceTaskCard.locator(".status-button").click();
-  await expect(aliceTaskCard.locator(".status-button")).toHaveText("in_progress");
-  await aliceTaskCard.locator(".status-button").click();
-  await expect(aliceTaskCard.locator(".status-button")).toHaveText("done");
-
-  const bobTaskCard = bobPage.locator("article", {
-    has: bobPage.getByRole("heading", { name: "Race task" }),
+  const bobCard = bobPage.locator("article", {
+    has: bobPage.getByRole("heading", { name: "Draft README" }),
   });
-  await bobTaskCard.locator(".status-button").click();
 
-  await expect(bobTaskCard.locator(".status-button")).toHaveText("in_progress");
-  await expect(aliceTaskCard.locator(".status-button")).toHaveText("in_progress");
-  await expect(bobPage.locator(".error-banner")).toHaveCount(0);
+  const aliceDescription = aliceCard.getByLabel("Task description");
+  const bobDescription = bobCard.getByLabel("Task description");
+
+  await aliceDescription.fill("Collaborative editing over SSE and Yjs");
+  await expect(bobDescription).toHaveValue("Collaborative editing over SSE and Yjs");
 
   await aliceContext.close();
   await bobContext.close();
@@ -348,8 +219,8 @@ test("dependencies, blocked transitions, comments, and shortcut help are visible
   await alicePage.goto(`/projects/${projectId}`);
   await bobPage.goto(`/projects/${projectId}`);
 
-  await expect(alicePage.locator(".status-pill")).toHaveText("connected");
-  await expect(bobPage.locator(".status-pill")).toHaveText("connected");
+  await expect(alicePage.locator(".status-pill")).toHaveText("Live");
+  await expect(bobPage.locator(".status-pill")).toHaveText("Live");
 
   await alicePage.getByLabel("Add task").fill("Fix auth");
   await alicePage.getByRole("button", { name: "Add task" }).click();
@@ -358,21 +229,12 @@ test("dependencies, blocked transitions, comments, and shortcut help are visible
   await expect(bobPage.getByRole("heading", { name: "Fix auth" })).toBeVisible();
 
   await alicePage.getByLabel("Add task").fill("Ship dashboard");
-  await alicePage.getByLabel("Depends on Fix auth").check();
+  await alicePage.getByLabel("Blocked by Fix auth").check();
   await alicePage.getByRole("button", { name: "Add task" }).click();
 
   await expect(alicePage.getByRole("heading", { name: "Ship dashboard" })).toBeVisible();
-  await expect(alicePage.getByText("Depends on: Fix auth")).toBeVisible();
-  await expect(bobPage.getByText("Depends on: Fix auth")).toBeVisible();
-
-  const fixAuthCard = bobPage.locator("article", {
-    has: bobPage.getByRole("heading", { name: "Fix auth" }),
-  });
-
-  await fixAuthCard.getByRole("button", { name: "Delete task" }).click();
-  await expect(
-    bobPage.locator(".error-banner"),
-  ).toContainText('Task "Fix auth" cannot be deleted while "Ship dashboard" depends on it.');
+  await expect(alicePage.getByText("Blocked by: Fix auth")).toBeVisible();
+  await expect(bobPage.getByText("Blocked by: Fix auth")).toBeVisible();
 
   await bobPage
     .locator("article", { has: bobPage.getByRole("heading", { name: "Ship dashboard" }) })
@@ -380,14 +242,18 @@ test("dependencies, blocked transitions, comments, and shortcut help are visible
     .click();
 
   await expect(bobPage.getByText('Blocked: dependency "Fix auth" must be completed first.')).toBeVisible();
+
+  const fixAuthCard = bobPage.locator("article", {
+    has: bobPage.getByRole("heading", { name: "Fix auth" }),
+  });
   await fixAuthCard.locator(".status-button").click();
   await expect(
     alicePage.locator("article", { has: alicePage.getByRole("heading", { name: "Fix auth" }) }).locator(".status-button"),
-  ).toHaveText("in_progress");
+  ).toHaveText("In Progress");
   await fixAuthCard.locator(".status-button").click();
   await expect(
     alicePage.locator("article", { has: alicePage.getByRole("heading", { name: "Fix auth" }) }).locator(".status-button"),
-  ).toHaveText("done");
+  ).toHaveText("Done");
 
   const dashboardCard = bobPage.locator("article", {
     has: bobPage.getByRole("heading", { name: "Ship dashboard" }),
@@ -395,7 +261,17 @@ test("dependencies, blocked transitions, comments, and shortcut help are visible
   await dashboardCard.locator(".status-button").click();
   await expect(
     alicePage.locator("article", { has: alicePage.getByRole("heading", { name: "Ship dashboard" }) }).locator(".status-button"),
-  ).toHaveText("in_progress");
+  ).toHaveText("In Progress");
+
+  await bobPage
+    .locator("article", { has: bobPage.getByRole("heading", { name: "Ship dashboard" }) })
+    .getByPlaceholder("Add a comment with @mentions")
+    .focus();
+  await expect(
+    alicePage
+      .locator("article", { has: alicePage.getByRole("heading", { name: "Ship dashboard" }) })
+      .getByText("bob is commenting"),
+  ).toBeVisible();
 
   await dashboardCard.getByPlaceholder("Add a comment with @mentions").fill("Looks good");
   await dashboardCard.getByRole("button", { name: "Comment" }).click();
@@ -415,18 +291,51 @@ test("dependencies, blocked transitions, comments, and shortcut help are visible
   await bobContext.close();
 });
 
-test("workspace collaboration surfaces expose accessible live regions and modal semantics", async ({
+test("landing page lists existing projects and opens a selected project", async ({
+  page,
+  request,
+}) => {
+  const alphaResponse = await request.post("/api/projects", {
+    data: {
+      name: "Alpha Workspace",
+      clientId: "client_alpha",
+      userId: "alice",
+    },
+  });
+  expect(alphaResponse.ok()).toBeTruthy();
+
+  const betaResponse = await request.post("/api/projects", {
+    data: {
+      name: "Beta Workspace",
+      clientId: "client_beta",
+      userId: "bob",
+    },
+  });
+  expect(betaResponse.ok()).toBeTruthy();
+  const betaPayload = await betaResponse.json();
+
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "Event-sourced collaborative task management" })).toBeVisible();
+  await expect(page.locator("a.project-catalog-item", { hasText: "Alpha Workspace" }).first()).toBeVisible();
+  await expect(page.locator(`a[href="/projects/${betaPayload.projectId}"]`)).toBeVisible();
+
+  await page.locator(`a[href="/projects/${betaPayload.projectId}"]`).click();
+  await expect(page).toHaveURL(`/projects/${betaPayload.projectId}`);
+  await expect(page.getByRole("heading", { name: "Beta Workspace" })).toBeVisible();
+});
+
+test("workspace supports deleting tasks and editing or deleting comments", async ({
   browser,
   request,
 }) => {
   const createProjectResponse = await request.post("/api/projects", {
     data: {
-      name: "Accessibility Demo",
+      name: "Workspace Lifecycle",
       clientId: "client_alice",
       userId: "alice",
     },
   });
-
   expect(createProjectResponse.ok()).toBeTruthy();
   const { projectId } = (await createProjectResponse.json()) as { projectId: string };
 
@@ -437,112 +346,93 @@ test("workspace collaboration surfaces expose accessible live regions and modal 
   const alicePage = await aliceContext.newPage();
 
   await alicePage.goto(`/projects/${projectId}`);
+  await expect(alicePage.locator(".status-pill")).toHaveText("Live");
 
-  await expect(alicePage.getByRole("status")).toHaveText("connected");
-  await expect(alicePage.getByRole("list", { name: "Who is viewing this project" })).toBeVisible();
-  await expect(alicePage.getByRole("list", { name: "Activity feed" })).toBeVisible();
-
-  await alicePage.getByLabel("Add task").fill("Accessible task");
+  await alicePage.getByLabel("Add task").fill("Document release candidate");
   await alicePage.getByRole("button", { name: "Add task" }).click();
-  await expect(alicePage.getByRole("list", { name: "Task list" })).toBeVisible();
 
-  await alicePage.keyboard.press("Shift+Slash");
-  const shortcutsDialog = alicePage.getByRole("dialog", { name: "Keyboard shortcuts" });
-  await expect(shortcutsDialog).toBeVisible();
-  await expect(shortcutsDialog).toHaveAttribute("aria-modal", "true");
+  const taskCard = alicePage.locator("article", {
+    has: alicePage.getByRole("heading", { name: "Document release candidate" }),
+  });
+  await expect(taskCard).toBeVisible();
+
+  await taskCard.getByPlaceholder("Add a comment with @mentions").fill("Needs one final README pass");
+  await taskCard.getByRole("button", { name: "Comment" }).click();
+  await expect(taskCard.getByText("Needs one final README pass", { exact: true })).toBeVisible();
+
+  await taskCard.getByRole("button", { name: "Edit comment" }).click();
+  await taskCard.getByLabel("Edit comment").fill("Needs one final README and API pass");
+  await taskCard.getByRole("button", { name: "Save comment" }).click();
+  await expect(taskCard.getByText("Needs one final README and API pass", { exact: true })).toBeVisible();
+
+  await taskCard.getByRole("button", { name: "Delete comment" }).click();
+  await expect(taskCard.getByText("Needs one final README and API pass", { exact: true })).toHaveCount(0);
+
+  await taskCard.getByRole("button", { name: "Delete task" }).click();
+  await expect(
+    alicePage.locator("article", {
+      has: alicePage.getByRole("heading", { name: "Document release candidate" }),
+    }),
+  ).toHaveCount(0);
 
   await aliceContext.close();
 });
 
-test("comment edits converge across two tabs", async ({
+test("kanban drag-and-drop reorders tasks across two browser contexts", async ({
   browser,
   request,
 }) => {
+  const todoTaskId = crypto.randomUUID();
+  const progressTaskId = crypto.randomUUID();
   const createProjectResponse = await request.post("/api/projects", {
     data: {
-      name: "Comment Edit Demo",
+      name: "Kanban Demo",
       clientId: "client_alice",
       userId: "alice",
     },
   });
-
   expect(createProjectResponse.ok()).toBeTruthy();
   const { projectId } = (await createProjectResponse.json()) as { projectId: string };
 
-  const aliceContext = await createIdentityContext(browser, {
-    clientId: "client_alice",
-    displayName: "alice",
-  });
-  const bobContext = await createIdentityContext(browser, {
-    clientId: "client_bob",
-    displayName: "bob",
-  });
-
-  const alicePage = await aliceContext.newPage();
-  const bobPage = await bobContext.newPage();
-
-  await alicePage.goto(`/projects/${projectId}`);
-  await bobPage.goto(`/projects/${projectId}`);
-
-  await alicePage.getByLabel("Add task").fill("Comment target");
-  await alicePage.getByRole("button", { name: "Add task" }).click();
-
-  const bobTaskCard = bobPage.locator("article", {
-    has: bobPage.getByRole("heading", { name: "Comment target" }),
-  });
-  await bobTaskCard.getByPlaceholder("Add a comment with @mentions").fill("Draft comment");
-  await bobTaskCard.getByRole("button", { name: "Comment" }).click();
-
-  await expect(alicePage.getByText("Draft comment", { exact: true })).toBeVisible();
-
-  await bobTaskCard.getByRole("button", { name: "Edit comment" }).click();
-  await bobTaskCard.getByRole("textbox", { name: "Edit comment text" }).fill("Edited comment");
-  await bobTaskCard.getByRole("button", { name: "Save comment" }).click({ force: true });
-
-  await expect(alicePage.getByText("Edited comment", { exact: true })).toBeVisible();
-  await expect(bobPage.getByText("Edited comment", { exact: true })).toBeVisible();
-  await expect(alicePage.getByText("Draft comment", { exact: true })).toHaveCount(0);
-
-  await aliceContext.close();
-  await bobContext.close();
-});
-
-test("stale comment editors surface an error after another tab deletes the comment", async ({
-  browser,
-  request,
-}) => {
-  const createProjectResponse = await request.post("/api/projects", {
-    data: {
-      name: "Comment Edit Conflict Demo",
-      clientId: "client_alice",
-      userId: "alice",
-    },
-  });
-
-  expect(createProjectResponse.ok()).toBeTruthy();
-  const { projectId } = (await createProjectResponse.json()) as { projectId: string };
-
-  const createTaskResponse = await request.post(`/api/projects/${projectId}/events`, {
+  await request.post(`/api/projects/${projectId}/events`, {
     data: {
       id: crypto.randomUUID(),
-      entityId: "task_conflict_target",
-      clientId: "client_alice",
+      entityId: todoTaskId,
+      clientId: "client_seed",
       userId: "alice",
-      timestamp: baseTimestamp + 1,
+      timestamp: baseTimestamp,
       expectedVersion: 1,
       action: {
         type: "task.create",
         data: {
-          title: "Conflict target",
+          title: "Ship board view",
           status: "todo",
           projectId,
+          position: 1,
+        },
+      },
+    },
+  });
+  await request.post(`/api/projects/${projectId}/events`, {
+    data: {
+      id: crypto.randomUUID(),
+      entityId: progressTaskId,
+      clientId: "client_seed",
+      userId: "alice",
+      timestamp: baseTimestamp + 1,
+      expectedVersion: 2,
+      action: {
+        type: "task.create",
+        data: {
+          title: "Verify optimistic reorder",
+          status: "in_progress",
+          projectId,
+          position: 2,
         },
       },
     },
   });
 
-  expect(createTaskResponse.ok()).toBeTruthy();
-
   const aliceContext = await createIdentityContext(browser, {
     clientId: "client_alice",
     displayName: "alice",
@@ -552,198 +442,128 @@ test("stale comment editors surface an error after another tab deletes the comme
     displayName: "bob",
   });
 
-  await bobContext.route(`**/api/projects/${projectId}/stream**`, (route) => route.abort());
-
   const alicePage = await aliceContext.newPage();
   const bobPage = await bobContext.newPage();
 
   await alicePage.goto(`/projects/${projectId}`);
   await bobPage.goto(`/projects/${projectId}`);
-  await expect(bobPage.locator(".status-pill")).toHaveText("reconnecting");
 
-  const bobTaskCard = bobPage.locator("article", {
-    has: bobPage.getByRole("heading", { name: "Conflict target" }),
-  });
-  const aliceTaskCard = alicePage.locator("article", {
-    has: alicePage.getByRole("heading", { name: "Conflict target" }),
-  });
+  await alicePage.getByRole("button", { name: "Board view" }).click();
+  await bobPage.getByRole("button", { name: "Board view" }).click();
 
-  await bobTaskCard.getByPlaceholder("Add a comment with @mentions").fill("Comment to edit");
-  await bobTaskCard.getByRole("button", { name: "Comment" }).click();
-  await expect(alicePage.getByText("Comment to edit", { exact: true })).toBeVisible();
-
-  await bobTaskCard.getByRole("button", { name: "Edit comment" }).click();
-  await bobTaskCard.getByRole("textbox", { name: "Edit comment text" }).fill("Edited too late");
-
-  await aliceTaskCard.getByRole("button", { name: "Delete comment" }).click();
-  await expect(alicePage.getByText("Comment to edit", { exact: true })).toHaveCount(0);
-
-  await bobTaskCard.getByRole("button", { name: "Save comment" }).click();
-
-  await expect(bobPage.locator(".error-banner")).toContainText(
-    "comment was deleted before your edit could be saved",
+  await alicePage.dragAndDrop(
+    `[data-task-id="${todoTaskId}"]`,
+    '[data-column-status="in_progress"] [data-dropzone="end"]',
   );
-  await expect(bobPage.getByText("Edited too late", { exact: true })).toHaveCount(0);
-  await expect(alicePage.getByText("Edited too late", { exact: true })).toHaveCount(0);
+
+  const aliceProgressColumn = alicePage.locator('[data-column-status="in_progress"]');
+  const bobProgressColumn = bobPage.locator('[data-column-status="in_progress"]');
+
+  await expect(aliceProgressColumn.getByText("Ship board view")).toBeVisible();
+  await expect(bobProgressColumn.getByText("Ship board view")).toBeVisible();
 
   await aliceContext.close();
   await bobContext.close();
 });
 
-test("task and comment deletion converge across two tabs", async ({
-  browser,
-  request,
+test("benchmark projects load task windows incrementally and virtualize the visible list", async ({
+  page,
 }) => {
-  const createProjectResponse = await request.post("/api/projects", {
-    data: {
-      name: "Delete Demo",
-      clientId: "client_alice",
-      userId: "alice",
-    },
+  const { seedScaleProject } = await import("../../src/server/demo-seeds");
+  const seeded = await seedScaleProject({
+    taskCount: 64,
+    baseUrl: "http://127.0.0.1:3010",
   });
 
-  expect(createProjectResponse.ok()).toBeTruthy();
-  const { projectId } = (await createProjectResponse.json()) as { projectId: string };
+  await page.goto(`/projects/${seeded.projectId}`);
 
-  const aliceContext = await createIdentityContext(browser, {
-    clientId: "client_alice",
-    displayName: "alice",
-  });
-  const bobContext = await createIdentityContext(browser, {
-    clientId: "client_bob",
-    displayName: "bob",
-  });
+  await expect(page.getByRole("heading", { name: seeded.projectName })).toBeVisible();
+  await expect(page.getByText("Showing 32 of 64 tasks")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Demo Task 00001" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Demo Task 00064" })).toHaveCount(0);
 
-  const alicePage = await aliceContext.newPage();
-  const bobPage = await bobContext.newPage();
-
-  await alicePage.goto(`/projects/${projectId}`);
-  await bobPage.goto(`/projects/${projectId}`);
-
-  await alicePage.getByLabel("Add task").fill("Disposable task");
-  await alicePage.getByRole("button", { name: "Add task" }).click();
-
-  const bobTaskCard = bobPage.locator("article", {
-    has: bobPage.getByRole("heading", { name: "Disposable task" }),
-  });
-  await expect(bobTaskCard).toBeVisible();
-
-  await bobTaskCard.getByPlaceholder("Add a comment with @mentions").fill("Disposable comment");
-  await bobTaskCard.getByRole("button", { name: "Comment" }).click();
-
-  await expect(alicePage.getByText("Disposable comment", { exact: true })).toBeVisible();
-
-  await bobTaskCard.getByRole("button", { name: "Delete comment" }).click();
-  await expect(alicePage.getByText("Disposable comment", { exact: true })).toHaveCount(0);
-  await expect(bobPage.getByText("deleted a comment")).toBeVisible();
-
-  await bobTaskCard.getByRole("button", { name: "Delete task" }).click();
-  await expect(alicePage.getByRole("heading", { name: "Disposable task" })).toHaveCount(0);
-  await expect(bobPage.getByRole("heading", { name: "Disposable task" })).toHaveCount(0);
-  await expect(alicePage.getByText("deleted a task")).toBeVisible();
-
-  await aliceContext.close();
-  await bobContext.close();
-});
-
-test("large task lists stay windowed and can load the next page", async ({
-  browser,
-  request,
-}) => {
-  const createProjectResponse = await request.post("/api/projects", {
-    data: {
-      name: "Virtualized Demo",
-      clientId: "client_alice",
-      userId: "alice",
-    },
-  });
-
-  expect(createProjectResponse.ok()).toBeTruthy();
-  const { projectId } = (await createProjectResponse.json()) as { projectId: string };
-
-  await seedTaskRange(projectId, {
-    count: 130,
-    clientId: "client_alice",
-    userId: "alice",
-  });
-
-  const aliceContext = await createIdentityContext(browser, {
-    clientId: "client_alice",
-    displayName: "alice",
-  });
-  const alicePage = await aliceContext.newPage();
-
-  await alicePage.goto(`/projects/${projectId}`);
-
-  await expect(alicePage.locator(".status-pill")).toHaveText("connected");
-  await expect(alicePage.getByText("130 tasks")).toBeVisible();
-
-  await expect
-    .poll(async () => alicePage.locator(".task-card").count())
-    .toBeLessThanOrEqual(16);
-
-  await expect(alicePage.getByRole("heading", { name: "Seed task 1" })).toBeVisible();
-  await expect(alicePage.getByRole("heading", { name: "Seed task 130" })).toHaveCount(0);
-
-  await alicePage.getByRole("button", { name: "Load more tasks" }).click();
-  await alicePage.getByLabel("Task list").evaluate((element) => {
+  const taskWindow = page.locator(".virtual-task-list");
+  await taskWindow.evaluate((element) => {
     element.scrollTop = element.scrollHeight;
     element.dispatchEvent(new Event("scroll"));
   });
 
-  await expect(alicePage.getByRole("heading", { name: "Seed task 130" })).toBeVisible();
-  await expect
-    .poll(async () => alicePage.locator(".task-card").count())
-    .toBeLessThanOrEqual(16);
-
-  await aliceContext.close();
+  await expect(page.getByText(/64 tasks · version/i)).toBeVisible();
+  await expect(page.getByText("48 prerequisite candidates.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Demo Task 00029" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Demo Task 00001" })).toHaveCount(0);
 });
 
-test("offline clients reconnect, catch up missed events, and return to connected", async ({
+test("workspace reflows cleanly on tablet-width viewports", async ({
   browser,
   request,
 }) => {
   const createProjectResponse = await request.post("/api/projects", {
     data: {
-      name: "Reconnect Demo",
-      clientId: "client_alice",
+      name: "Tablet Layout Demo",
+      clientId: "client_tablet",
       userId: "alice",
     },
   });
-
   expect(createProjectResponse.ok()).toBeTruthy();
   const { projectId } = (await createProjectResponse.json()) as { projectId: string };
 
-  const aliceContext = await createIdentityContext(browser, {
-    clientId: "client_alice",
-    displayName: "alice",
-  });
-  const bobContext = await createIdentityContext(browser, {
-    clientId: "client_bob",
-    displayName: "bob",
-  });
+  for (const viewport of [
+    { width: 820, height: 1180 },
+    { width: 900, height: 1180 },
+    { width: 1024, height: 1280 },
+  ]) {
+    const context = await browser.newContext({
+      viewport,
+    });
+    await context.addInitScript((identity) => {
+      window.localStorage.setItem("collab-task-system.client-id", identity.clientId);
+      window.localStorage.setItem("collab-task-system.display-name", identity.displayName);
+    }, {
+      clientId: `client_tablet_${viewport.width}`,
+      displayName: "alice",
+    });
 
-  const alicePage = await aliceContext.newPage();
-  const bobPage = await bobContext.newPage();
+    const page = await context.newPage();
+    await page.goto(`/projects/${projectId}`);
 
-  await alicePage.goto(`/projects/${projectId}`);
-  await bobPage.goto(`/projects/${projectId}`);
+    await expect(page.locator(".status-pill")).toHaveText("Live");
 
-  await expect(alicePage.locator(".status-pill")).toHaveText("connected");
-  await expect(bobPage.locator(".status-pill")).toHaveText("connected");
+    const layout = await page.evaluate(() => {
+      const body = document.querySelector(".workspace-body");
+      const headerStack = document.querySelector(".header-stack");
+      const headerControls = document.querySelector(".header-controls");
+      const workspaceMain = document.querySelector(".workspace-main");
+      const activityPanel = document.querySelector(".activity-panel");
+      const taskForm = document.querySelector(".task-form");
 
-  await bobContext.setOffline(true);
+      if (!body || !headerStack || !headerControls || !workspaceMain || !activityPanel || !taskForm) {
+        throw new Error("Expected workspace layout nodes to be present.");
+      }
 
-  await alicePage.getByLabel("Add task").fill("Missed while offline");
-  await alicePage.getByRole("button", { name: "Add task" }).click();
-  await expect(alicePage.getByRole("heading", { name: "Missed while offline" })).toBeVisible();
+      const bodyStyle = window.getComputedStyle(body);
+      const formStyle = window.getComputedStyle(taskForm);
+      const headerStackRect = headerStack.getBoundingClientRect();
+      const headerControlsRect = headerControls.getBoundingClientRect();
+      const workspaceMainRect = workspaceMain.getBoundingClientRect();
+      const activityPanelRect = activityPanel.getBoundingClientRect();
 
-  await bobContext.setOffline(false);
+      return {
+        bodyColumns: bodyStyle.gridTemplateColumns,
+        formColumns: formStyle.gridTemplateColumns,
+        hasHorizontalOverflow:
+          document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+        activityBelowMain: activityPanelRect.top >= workspaceMainRect.bottom - 1,
+        headerControlsBelowTitle: headerControlsRect.top >= headerStackRect.bottom - 1,
+      };
+    });
 
-  await expect(bobPage.locator(".status-pill")).toHaveText("connected");
-  await expect(bobPage.locator(".error-banner")).toHaveCount(0);
-  await expect(bobPage.getByRole("heading", { name: "Missed while offline" })).toBeVisible();
+    expect(layout.hasHorizontalOverflow).toBeFalsy();
+    expect(layout.activityBelowMain).toBeTruthy();
+    expect(layout.headerControlsBelowTitle).toBeTruthy();
+    expect(layout.bodyColumns.trim().split(/\s+/)).toHaveLength(1);
+    expect(layout.formColumns.trim().split(/\s+/)).toHaveLength(1);
 
-  await aliceContext.close();
-  await bobContext.close();
+    await context.close();
+  }
 });

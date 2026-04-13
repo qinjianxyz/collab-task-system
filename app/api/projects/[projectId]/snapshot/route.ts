@@ -1,19 +1,14 @@
 import { NextResponse } from "next/server";
 
-import {
-  loadedProjectSnapshotResponseSchema,
-  pagedProjectSnapshotResponseSchema,
-  projectSnapshotResponseSchema,
-} from "../../../../../src/shared/api";
+import { projectSnapshotResponseSchema } from "../../../../../src/shared/api";
 import { handleRouteError } from "../../../../../src/server/api/errors";
-import { readLimitQuery } from "../../../../../src/server/api/requests";
-import {
-  DEFAULT_TASK_PAGE_SIZE,
-  getPagedSnapshot,
-} from "../../../../../src/server/events/snapshot";
+import { getWorkspaceBootstrap } from "../../../../../src/server/projects/workspace-bootstrap";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const DEFAULT_TASK_LIMIT = 100;
+const MAX_TASK_LIMIT = 200;
 
 type RouteContext = {
   params: Promise<{
@@ -27,32 +22,20 @@ export async function GET(
 ): Promise<NextResponse> {
   try {
     const { projectId } = await context.params;
-    const taskLimit = readLimitQuery(request, {
-      defaultValue: DEFAULT_TASK_PAGE_SIZE,
-      paramName: "taskLimit",
-    });
-    const snapshot = await getPagedSnapshot(projectId, {
-      taskLimit,
-    });
-    const compatibilitySnapshot = {
-      ...snapshot,
-      tasks: snapshot.taskPage.tasks,
-      comments: snapshot.taskPage.comments,
-    };
+    const url = new URL(request.url);
+    const rawLimit = url.searchParams.get("taskLimit");
+    const taskLimit = rawLimit
+      ? Math.min(Math.max(1, Number(rawLimit)), MAX_TASK_LIMIT)
+      : DEFAULT_TASK_LIMIT;
 
-    projectSnapshotResponseSchema.parse({
-      snapshot: compatibilitySnapshot,
-    });
-    loadedProjectSnapshotResponseSchema.parse({
-      snapshot: compatibilitySnapshot,
-    });
-    pagedProjectSnapshotResponseSchema.parse({
-      snapshot,
-    });
+    const { snapshot, initialTaskPage } = await getWorkspaceBootstrap(projectId, taskLimit);
 
-    return NextResponse.json({
-      snapshot: compatibilitySnapshot,
-    });
+    return NextResponse.json(
+      projectSnapshotResponseSchema.parse({
+        snapshot,
+        page: initialTaskPage,
+      }),
+    );
   } catch (error) {
     return handleRouteError(error);
   }

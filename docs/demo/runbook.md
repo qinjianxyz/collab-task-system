@@ -1,103 +1,100 @@
 # Demo Runbook
 
-Use this before you hit record.
-
-## 1. Start The App
-
-Default port:
+## Start The App
 
 ```bash
 docker compose up --build
 ```
 
-Alternate port:
+If `3000` is occupied:
 
 ```bash
 APP_PORT=8100 docker compose up --build
 ```
 
-Health check:
+## Seed The Two Demo Projects
 
 ```bash
-curl http://127.0.0.1:8100/api/health
+APP_PORT=8100 bun run seed:demo
+APP_PORT=8100 TASK_COUNT=300 bun run seed:scale
+
+# optional heavier scale proof
+APP_PORT=8100 TASK_COUNT=10000 bun run seed:scale
+
+# OSS-reference-grade stress proof
+APP_PORT=8100 TASK_COUNT=30000 bun run seed:scale
 ```
 
-Use `3000` in that command if you are recording on the default port.
+Record the two returned URLs:
 
-## 2. Seed A Large Project
+- realistic walkthrough URL
+- scale benchmark URL
 
-In another terminal:
+## Recording Setup
 
-```bash
-TASK_COUNT=10000 bun run seed:scale
-```
+- use two browser contexts, not two tabs in one profile
+- set different display names so presence is visible
+- keep [README.md](../../README.md), [architecture.md](../architecture.md), and [scaling.md](../scaling.md) ready for the Q&A portion
 
-Save the returned `projectId` and `url`. You will need them for the scale segment.
+## Recording Order
 
-In a third terminal, seed the realistic demo project:
+1. Open the realistic walkthrough URL in two browser contexts.
+2. Show presence chips with two names.
+3. Add a task.
+4. Use `Blocked by` to pick a prerequisite.
+5. Show the new task appear in the second browser context.
+6. Change status in the second browser context and show the first one converge.
+7. Focus a comment box in one browser context and point out the live cursor badge in the other.
+8. Add a comment with `@alice` or `@bob`, then show the notification panel update.
+9. Edit the task description in one browser context and show the collaborative description textarea update in the other.
+10. Add a comment, then edit it, then delete it.
+11. Delete a task.
+12. Trigger a blocked transition and show the explicit validation error.
+13. Use undo and redo.
+14. Switch to Board view and drag a card into another status column.
+11. Open `README.md` and walk through:
+    - What You Can Do
+    - Architecture At A Glance
+    - Why Event Sourcing Instead Of CRUD
+    - How The 2MB Constraint Is Handled
+15. Open the scale benchmark URL.
+16. Show the first task window, then scroll to load more.
+17. Point out that the benchmark view uses cursor-paged reads and virtualized rendering.
+18. Use `docs/architecture.md` and `docs/scaling.md` only for follow-up questions.
 
-```bash
-bun run seed:demo
-```
+## What To Emphasize
 
-Save that URL too — use it for the collaboration walkthrough.
+- no managed realtime database
+- event log as the source of truth
+- append + projection in one transaction
+- optimistic UI with ordered server reconciliation
+- live cursor and collaborative description layers stay outside the durable log
+- board drag-and-drop still writes normal `task.update` events
+- domain rules enforced on the write path
+- paged reads and virtualized rendering for larger task sets
 
-## 3. Open Browser Contexts
+## What Not To Waste Time On
 
-For the collaboration demo:
+- Docker logs
+- long test output
+- file-by-file code browsing before showing behavior
+- claiming distributed scale features that are not shipped
 
-- open one normal browser window
-- open one incognito window or a separate browser profile
-
-Reason:
-
-- demo identity is stored in browser storage
-- isolated contexts make presence clearer and avoid accidental identity reuse
-
-## 4. Tabs To Keep Ready
-
-Open these before recording:
-
-- app root
-- seeded large project URL
-- [README.md](../../README.md)
-- [architecture.md](../architecture.md)
-- [scaling.md](../scaling.md)
-- [api.md](../api.md)
-
-## 5. Live Recording Sequence
-
-1. show the landing page and create a project
-2. open the same project in the second browser context
-3. add a task, change status, and add a comment
-4. show presence, activity, undo/redo, and shortcuts
-5. show dependency validation
-6. switch to the seeded large project and scroll
-7. show README, architecture, scale proof, and API docs
-
-## 6. Fallbacks
+## Recovery Steps
 
 If presence is missing:
 
-- confirm you are using two isolated browser contexts
-- refresh both project pages once
+- verify two browser contexts are open
+- verify each has a different display name
 
-If the app is slow to start:
+If the app is unreachable:
 
-- wait for `/api/health` to return `status: ok`
+- verify the chosen port
+- rerun `docker compose up --build`
 
-If the large project is not ready:
-
-- rerun the seed script and use the newly returned `projectId`
-
-If port `3000` is occupied:
-
-- restart on `8100` with `APP_PORT=8100 docker compose up --build`
-
-## 7. After Recording
-
-Shut the stack down when you are done:
+If you need fresh URLs:
 
 ```bash
-docker compose down
+APP_PORT=8100 bun run seed:demo
+APP_PORT=8100 TASK_COUNT=300 bun run seed:scale
 ```

@@ -1,213 +1,177 @@
-import { createClient } from "redis";
-import { NextResponse } from "next/server";
+type RateLimitResult =
+  | {
+      allowed: true;
+      retryAfterMs: 0;
+    }
+  | {
+      allowed: false;
+      retryAfterMs: number;
+    };
 
-type RateLimitConfig = {
-  limit: number;
+export type RateLimiter = {
+  check: (key: string) => Promise<RateLimitResult>;
+  dispose?: () => Promise<void>;
+};
+
+type InMemoryRateLimiterOptions = {
+  maxRequests: number;
   windowMs: number;
-  redisUrl?: string;
 };
-
-type RateLimitDecision = {
-  allowed: boolean;
-  remaining: number;
-  resetAt: number;
-  retryAfterSeconds: number;
-};
-
-type RateLimitState = {
-  count: number;
-  resetAt: number;
-};
-
-export interface WriteRateLimiter {
-  check: (key: string) => Promise<RateLimitDecision>;
-}
-
-export class InMemoryWriteRateLimiter implements WriteRateLimiter {
-  private readonly state = new Map<string, RateLimitState>();
-
-  constructor(private readonly config: RateLimitConfig) {}
-
-  async check(key: string): Promise<RateLimitDecision> {
-    const now = Date.now();
-    const existing = this.state.get(key);
-    const isExpired = !existing || existing.resetAt <= now;
-    const nextResetAt = isExpired ? now + this.config.windowMs : existing.resetAt;
-    const nextCount = isExpired ? 1 : existing.count + 1;
-
-    this.state.set(key, {
-      count: nextCount,
-      resetAt: nextResetAt,
-    });
-
-    if (nextCount <= this.config.limit) {
-      return {
-        allowed: true,
-        remaining: this.config.limit - nextCount,
-        resetAt: nextResetAt,
-        retryAfterSeconds: 0,
-      };
-    }
-
-    return {
-      allowed: false,
-      remaining: 0,
-      resetAt: nextResetAt,
-      retryAfterSeconds: Math.max(1, Math.ceil((nextResetAt - now) / 1000)),
-    };
-  }
-}
-
-export class RedisWriteRateLimiter implements WriteRateLimiter {
-  private clientPromise: Promise<ReturnType<typeof createClient>> | null = null;
-
-  constructor(private readonly config: RateLimitConfig) {}
-
-  async check(key: string): Promise<RateLimitDecision> {
-    const client = await this.getClient();
-    const bucketKey = this.bucketKey(key);
-    const count = await client.incr(bucketKey);
-
-    if (count === 1) {
-      await client.expire(bucketKey, Math.max(1, Math.ceil(this.config.windowMs / 1000)));
-    }
-
-    const ttlSeconds = await client.ttl(bucketKey);
-    const effectiveTtlSeconds = ttlSeconds >= 0 ? ttlSeconds : Math.max(1, Math.ceil(this.config.windowMs / 1000));
-    const resetAt = Date.now() + effectiveTtlSeconds * 1000;
-
-    if (count <= this.config.limit) {
-      return {
-        allowed: true,
-        remaining: this.config.limit - count,
-        resetAt,
-        retryAfterSeconds: 0,
-      };
-    }
-
-    return {
-      allowed: false,
-      remaining: 0,
-      resetAt,
-      retryAfterSeconds: Math.max(1, effectiveTtlSeconds),
-    };
-  }
-
-  private bucketKey(key: string): string {
-    return `write-rate-limit:${key}`;
-  }
-
-  private getClient(): Promise<ReturnType<typeof createClient>> {
-    if (!this.clientPromise) {
-      const client = createClient({
-        url: this.config.redisUrl,
-      });
-
-      client.on("error", () => undefined);
-      this.clientPromise = client.connect().then(() => client);
-    }
-
-    return this.clientPromise;
-  }
-}
-
-export class ResilientRedisWriteRateLimiter extends RedisWriteRateLimiter {
-  private failedOpen = false;
-
-  private readonly fallback: InMemoryWriteRateLimiter;
-
-  constructor(private readonly resilientConfig: RateLimitConfig) {
-    super(resilientConfig);
-    this.fallback = new InMemoryWriteRateLimiter(resilientConfig);
-  }
-
-  async check(key: string): Promise<RateLimitDecision> {
-    if (this.failedOpen) {
-      return this.fallback.check(key);
-    }
-
-    try {
-      return await super.check(key);
-    } catch {
-      this.failedOpen = true;
-      return this.fallback.check(key);
-    }
-  }
-}
-
-const RATE_LIMIT_LIMIT = 120;
-const RATE_LIMIT_WINDOW_MS = 60_000;
-
-const DEFAULT_RATE_LIMIT_CONFIG: RateLimitConfig = {
-  limit: RATE_LIMIT_LIMIT,
-  windowMs: RATE_LIMIT_WINDOW_MS,
-};
-
-const WRITE_RATE_LIMITER_KEY_CONFIG = Symbol.for(
-  "collab-task-system.write-rate-limiter.config",
-);
 
 const WRITE_RATE_LIMITER_KEY = Symbol.for("collab-task-system.write-rate-limiter");
+let hasWarnedAboutRedisRateLimiter = false;
 
-type GlobalWithWriteRateLimiter = typeof globalThis & {
-  [WRITE_RATE_LIMITER_KEY]?: WriteRateLimiter;
-  [WRITE_RATE_LIMITER_KEY_CONFIG]?: string;
+type GlobalWithRateLimiter = typeof globalThis & {
+  [WRITE_RATE_LIMITER_KEY]?: RateLimiter;
 };
 
-function readRateLimitConfig(env: NodeJS.ProcessEnv = process.env): RateLimitConfig {
-  const limit = Number(env.WRITE_RATE_LIMIT_LIMIT ?? RATE_LIMIT_LIMIT);
-  const windowMs = Number(env.WRITE_RATE_LIMIT_WINDOW_MS ?? RATE_LIMIT_WINDOW_MS);
-  const redisUrl = env.REDIS_URL?.trim();
+type InMemoryBucket = {
+  count: number;
+  resetsAt: number;
+};
+
+const DEFAULT_MAX_REQUESTS = 120;
+const DEFAULT_WINDOW_MS = 60_000;
+
+export class RateLimitError extends Error {
+  readonly retryAfterMs: number;
+
+  constructor(message: string, retryAfterMs: number) {
+    super(message);
+    this.name = "RateLimitError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+export function createInMemoryRateLimiter(
+  options: InMemoryRateLimiterOptions,
+): RateLimiter {
+  const buckets = new Map<string, InMemoryBucket>();
 
   return {
-    limit: Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : RATE_LIMIT_LIMIT,
-    windowMs:
-      Number.isFinite(windowMs) && windowMs > 0 ? Math.floor(windowMs) : RATE_LIMIT_WINDOW_MS,
-    ...(redisUrl ? { redisUrl } : {}),
+    async check(key) {
+      const now = Date.now();
+      const bucket = buckets.get(key);
+
+      if (!bucket || bucket.resetsAt <= now) {
+        buckets.set(key, {
+          count: 1,
+          resetsAt: now + options.windowMs,
+        });
+
+        return {
+          allowed: true,
+          retryAfterMs: 0,
+        };
+      }
+
+      if (bucket.count >= options.maxRequests) {
+        return {
+          allowed: false,
+          retryAfterMs: Math.max(bucket.resetsAt - now, 1),
+        };
+      }
+
+      bucket.count += 1;
+
+      return {
+        allowed: true,
+        retryAfterMs: 0,
+      };
+    },
   };
 }
 
-export function createWriteRateLimiter(
-  options: Partial<RateLimitConfig> = {},
-): WriteRateLimiter {
-  const config = {
-    ...DEFAULT_RATE_LIMIT_CONFIG,
-    ...readRateLimitConfig(),
-    ...options,
+export function createRedisRateLimiter(
+  options: InMemoryRateLimiterOptions & {
+    redisUrl: string;
+  },
+): RateLimiter {
+  let clientPromise: Promise<{
+    incr: (key: string) => Promise<number>;
+    pExpire: (key: string, ttlMs: number) => Promise<unknown>;
+    pTTL: (key: string) => Promise<number>;
+    quit: () => Promise<unknown>;
+  }> | null = null;
+
+  async function getClient() {
+    if (!clientPromise) {
+      clientPromise = import("redis").then(async ({ createClient }) => {
+        const client = createClient({ url: options.redisUrl });
+        client.on("error", () => undefined);
+        await client.connect();
+        return client;
+      });
+    }
+
+    return clientPromise;
+  }
+
+  return {
+    async check(key) {
+      const namespacedKey = `collab-task-system:rate-limit:${key}`;
+      const client = await getClient();
+      const count = await client.incr(namespacedKey);
+
+      if (count === 1) {
+        await client.pExpire(namespacedKey, options.windowMs);
+      }
+
+      if (count > options.maxRequests) {
+        return {
+          allowed: false,
+          retryAfterMs: Math.max(await client.pTTL(namespacedKey), 1),
+        };
+      }
+
+      return {
+        allowed: true,
+        retryAfterMs: 0,
+      };
+    },
+    async dispose() {
+      const client = await clientPromise?.catch(() => null);
+      await client?.quit().catch(() => undefined);
+    },
   };
-
-  if (config.redisUrl) {
-    return new ResilientRedisWriteRateLimiter(config);
-  }
-
-  return new InMemoryWriteRateLimiter(config);
 }
 
-export function getWriteRateLimiter(): WriteRateLimiter {
-  const runtime = globalThis as GlobalWithWriteRateLimiter;
-  const config = JSON.stringify(readRateLimitConfig());
+export function getWriteRateLimiter(env: NodeJS.ProcessEnv = process.env): RateLimiter {
+  const runtime = globalThis as GlobalWithRateLimiter;
 
-  if (!runtime[WRITE_RATE_LIMITER_KEY] || runtime[WRITE_RATE_LIMITER_KEY_CONFIG] !== config) {
-    runtime[WRITE_RATE_LIMITER_KEY] = createWriteRateLimiter();
-    runtime[WRITE_RATE_LIMITER_KEY_CONFIG] = config;
+  if (!runtime[WRITE_RATE_LIMITER_KEY]) {
+    const redisUrl = env.REDIS_URL?.trim();
+
+    if (redisUrl) {
+      try {
+        runtime[WRITE_RATE_LIMITER_KEY] = createRedisRateLimiter({
+          maxRequests: DEFAULT_MAX_REQUESTS,
+          redisUrl,
+          windowMs: DEFAULT_WINDOW_MS,
+        });
+      } catch (error) {
+        if (!hasWarnedAboutRedisRateLimiter) {
+          console.warn("falling back to in-memory rate limiter", error);
+          hasWarnedAboutRedisRateLimiter = true;
+        }
+        runtime[WRITE_RATE_LIMITER_KEY] = createInMemoryRateLimiter({
+          maxRequests: DEFAULT_MAX_REQUESTS,
+          windowMs: DEFAULT_WINDOW_MS,
+        });
+      }
+    } else {
+      runtime[WRITE_RATE_LIMITER_KEY] = createInMemoryRateLimiter({
+        maxRequests: DEFAULT_MAX_REQUESTS,
+        windowMs: DEFAULT_WINDOW_MS,
+      });
+    }
   }
 
-  return runtime[WRITE_RATE_LIMITER_KEY] ?? createWriteRateLimiter();
+  return runtime[WRITE_RATE_LIMITER_KEY]!;
 }
 
-export function createRateLimitResponse(decision: RateLimitDecision): NextResponse {
-  return NextResponse.json(
-    {
-      error: {
-        code: "rate_limited",
-        message: "too many write requests, please retry later",
-      },
-    },
-    {
-      status: 429,
-      headers: {
-        "Retry-After": String(Math.max(1, decision.retryAfterSeconds)),
-      },
-    },
-  );
+export function resetRateLimiterForTests(): void {
+  const runtime = globalThis as GlobalWithRateLimiter;
+  void runtime[WRITE_RATE_LIMITER_KEY]?.dispose?.();
+  delete runtime[WRITE_RATE_LIMITER_KEY];
 }

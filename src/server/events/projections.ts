@@ -36,6 +36,120 @@ function buildUpdateStatement(
   };
 }
 
+function buildNotificationId(
+  projectId: string,
+  commentId: string,
+  userId: string,
+): string {
+  return `${projectId}:${commentId}:${userId}`;
+}
+
+function buildContentPreview(content: string): string {
+  return content.length <= 160 ? content : `${content.slice(0, 157)}...`;
+}
+
+async function getCommentContext(
+  client: PoolClient,
+  event: ProjectEvent,
+): Promise<{ taskId: string; taskTitle: string } | null> {
+  if (event.action.type === "comment.create") {
+    const taskResult = await client.query<{ title: string }>(
+      `select title from tasks where id = $1 and project_id = $2`,
+      [event.action.data.taskId, event.projectId],
+    );
+
+    return {
+      taskId: event.action.data.taskId,
+      taskTitle: taskResult.rows[0]?.title ?? event.action.data.taskId,
+    };
+  }
+
+  if (event.action.type === "comment.update") {
+    const commentResult = await client.query<{ task_id: string; title: string }>(
+      `select comments.task_id, tasks.title
+         from comments
+         inner join tasks on tasks.id = comments.task_id
+        where comments.id = $1`,
+      [event.entityId],
+    );
+
+    if (!commentResult.rows[0]) {
+      return null;
+    }
+
+    return {
+      taskId: commentResult.rows[0].task_id,
+      taskTitle: commentResult.rows[0].title,
+    };
+  }
+
+  return null;
+}
+
+async function syncCommentNotifications(
+  client: PoolClient,
+  event: ProjectEvent,
+  mentions: string[],
+): Promise<void> {
+  if (
+    event.action.type !== "comment.create" &&
+    event.action.type !== "comment.update"
+  ) {
+    return;
+  }
+
+  const context = await getCommentContext(client, event);
+  if (!context) {
+    return;
+  }
+
+  const mentionedUsers = mentions.filter((userId) => userId !== event.userId);
+
+  await client.query(
+    `delete from notifications
+      where project_id = $1
+        and comment_id = $2
+        and not (user_id = any($3::text[]))`,
+    [event.projectId, event.entityId, mentionedUsers],
+  );
+
+  for (const userId of mentionedUsers) {
+    await client.query(
+      `insert into notifications (
+          id,
+          project_id,
+          task_id,
+          task_title,
+          comment_id,
+          user_id,
+          actor_user_id,
+          content_preview,
+          created_at,
+          updated_at
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        on conflict (project_id, comment_id, user_id)
+        do update
+          set task_id = excluded.task_id,
+              task_title = excluded.task_title,
+              actor_user_id = excluded.actor_user_id,
+              content_preview = excluded.content_preview,
+              updated_at = excluded.updated_at`,
+      [
+        buildNotificationId(event.projectId, event.entityId, userId),
+        event.projectId,
+        context.taskId,
+        context.taskTitle,
+        event.entityId,
+        userId,
+        event.userId,
+        buildContentPreview(event.action.data.content),
+        eventDate(event),
+        eventDate(event),
+      ],
+    );
+  }
+}
+
 export async function applyEventProjection(
   client: PoolClient,
   event: ProjectEvent,
@@ -181,6 +295,7 @@ export async function applyEventProjection(
           eventDate(event),
         ],
       );
+      await syncCommentNotifications(client, event, mentions);
       return;
     }
     case "comment.update": {
@@ -194,10 +309,15 @@ export async function applyEventProjection(
           where id = $4`,
         [event.action.data.content, mentions, eventDate(event), event.entityId],
       );
+      await syncCommentNotifications(client, event, mentions);
       return;
     }
     case "comment.delete": {
       await client.query("delete from comments where id = $1", [event.entityId]);
+      await client.query(
+        "delete from notifications where project_id = $1 and comment_id = $2",
+        [event.projectId, event.entityId],
+      );
       return;
     }
     case "presence.update":

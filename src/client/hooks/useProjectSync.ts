@@ -12,23 +12,24 @@ import {
   type ApiError,
   appendProjectEvent,
   fetchProjectEvents,
+  fetchProjectNotifications,
   fetchProjectSnapshot,
   fetchProjectTaskPage,
+  updateProjectPresence,
 } from "../api";
 import { applyActivityEvent, buildActivityFeed, type ActivityItem } from "../sync/activity";
+import { applyNotificationEvent, sortNotifications } from "../sync/notifications";
 import { createHistoryEntry, type HistoryEntry } from "../sync/history";
-import {
-  applyProjectEvent,
-  buildOptimisticEvent,
-  deriveVisibleSnapshot,
-  mergeTaskPage,
-} from "../sync/reducer";
+import { buildOptimisticEvent, deriveVisibleSnapshot, applyProjectEvent } from "../sync/reducer";
+import type { ProjectTaskPageResponse } from "../../shared/api";
 import type {
   AppendEventInput,
   EventAction,
-  LoadedProjectSnapshot,
+  MentionNotification,
+  PresenceCursor,
   PresenceViewer,
   ProjectEvent,
+  ProjectSnapshot,
 } from "../../shared/types";
 
 type ConnectionStatus = "loading" | "connected" | "reconnecting";
@@ -60,10 +61,13 @@ type UseProjectSyncResult = {
   isMutating: boolean;
   isLoadingMoreTasks: boolean;
   loadMoreTasks: () => Promise<void>;
+  notifications: MentionNotification[];
+  refresh: () => Promise<void>;
   redo: () => Promise<void>;
-  snapshot: LoadedProjectSnapshot | null;
+  snapshot: ProjectSnapshot | null;
   totalTaskCount: number;
   undo: () => Promise<void>;
+  updateCursor: (cursor: PresenceCursor | null) => Promise<void>;
   viewers: PresenceViewer[];
 };
 
@@ -71,6 +75,17 @@ type DispatchOptions = {
   clearRedoStack?: boolean;
   recordHistory?: boolean;
 };
+
+type TaskWindowState = {
+  hasMoreTasks: boolean;
+  isLoadingMoreTasks: boolean;
+  nextTaskCursor: string | null;
+  totalTaskCount: number;
+};
+
+type InitialTaskPage = ProjectTaskPageResponse["page"];
+
+const TASK_PAGE_SIZE = 32;
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -85,9 +100,9 @@ function isConflictError(error: unknown): error is ApiError {
 }
 
 function applyEvents(
-  snapshot: LoadedProjectSnapshot | null,
+  snapshot: ProjectSnapshot | null,
   events: ProjectEvent[],
-): LoadedProjectSnapshot | null {
+): ProjectSnapshot | null {
   if (!snapshot) {
     return snapshot;
   }
@@ -99,25 +114,72 @@ function trimHistory(entries: HistoryEntry[], limit = 50): HistoryEntry[] {
   return entries.slice(-limit);
 }
 
+function mergeTaskPage(
+  snapshot: ProjectSnapshot,
+  page: InitialTaskPage,
+): ProjectSnapshot {
+  const tasksById = new Map(snapshot.tasks.map((task) => [task.id, task]));
+  const commentsById = new Map(snapshot.comments.map((comment) => [comment.id, comment]));
+
+  for (const task of page.tasks) {
+    tasksById.set(task.id, task);
+  }
+
+  for (const comment of page.comments) {
+    commentsById.set(comment.id, comment);
+  }
+
+  return {
+    ...snapshot,
+    tasks: [...tasksById.values()].sort(
+      (left, right) => left.position - right.position || left.id.localeCompare(right.id),
+    ),
+    comments: [...commentsById.values()].sort(
+      (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+    ),
+  };
+}
+
+function updateTotalTaskCount(totalCount: number, event: ProjectEvent): number {
+  switch (event.action.type) {
+    case "task.create":
+      return totalCount + 1;
+    case "task.delete":
+      return Math.max(0, totalCount - 1);
+    default:
+      return totalCount;
+  }
+}
+
 export function useProjectSync(
   projectId: string,
   identity: Identity,
+  initialSnapshot: ProjectSnapshot | null = null,
+  initialTaskPage: InitialTaskPage | null = null,
 ): UseProjectSyncResult {
-  const [serverSnapshot, setServerSnapshot] = useState<LoadedProjectSnapshot | null>(null);
+  const [serverSnapshot, setServerSnapshot] = useState<ProjectSnapshot | null>(initialSnapshot);
   const [pendingMutation, setPendingMutation] = useState<PendingMutation | null>(null);
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [notifications, setNotifications] = useState<MentionNotification[]>([]);
   const [viewers, setViewers] = useState<PresenceViewer[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("loading");
   const [error, setError] = useState<string | null>(null);
-  const [isLoadingMoreTasks, setIsLoadingMoreTasks] = useState(false);
+  const [taskWindow, setTaskWindow] = useState<TaskWindowState>({
+    hasMoreTasks: initialTaskPage?.hasMore ?? false,
+    isLoadingMoreTasks: false,
+    nextTaskCursor: initialTaskPage?.nextCursor ?? null,
+    totalTaskCount: initialTaskPage?.totalCount ?? initialSnapshot?.tasks.length ?? 0,
+  });
 
-  const snapshotRef = useRef<LoadedProjectSnapshot | null>(null);
+  const snapshotRef = useRef<ProjectSnapshot | null>(initialSnapshot);
   const pendingMutationRef = useRef<PendingMutation | null>(null);
   const undoStackRef = useRef<HistoryEntry[]>([]);
   const redoStackRef = useRef<HistoryEntry[]>([]);
-  const lastVersionRef = useRef(0);
+  const lastVersionRef = useRef(initialSnapshot?.version ?? 0);
+  const taskWindowRef = useRef(taskWindow);
+  const lastCursorPayloadRef = useRef("");
 
   useEffect(() => {
     snapshotRef.current = serverSnapshot;
@@ -136,10 +198,25 @@ export function useProjectSync(
     redoStackRef.current = redoStack;
   }, [redoStack]);
 
+  useEffect(() => {
+    taskWindowRef.current = taskWindow;
+  }, [taskWindow]);
+
   const applyCommittedEvent = useEffectEvent((event: ProjectEvent) => {
+    if (snapshotRef.current && event.version <= snapshotRef.current.version) {
+      return;
+    }
+
     startTransition(() => {
       setServerSnapshot((current) => (current ? applyProjectEvent(current, event) : current));
       setActivity((current) => applyActivityEvent(current, event));
+      setNotifications((current) =>
+        applyNotificationEvent(current, event, identity.userId.trim(), snapshotRef.current),
+      );
+      setTaskWindow((current) => ({
+        ...current,
+        totalTaskCount: updateTotalTaskCount(current.totalTaskCount, event),
+      }));
       setPendingMutation((current) =>
         current?.input.id === event.id ? null : current,
       );
@@ -147,52 +224,32 @@ export function useProjectSync(
     });
   });
 
-  const refreshSnapshot = useEffectEvent(async (): Promise<LoadedProjectSnapshot> => {
+  const refreshSnapshot = useEffectEvent(async (): Promise<ProjectSnapshot> => {
     const response = await fetchProjectSnapshot(projectId);
     const recentEventsResponse = await fetchProjectEvents(
       projectId,
       Math.max(0, response.snapshot.version - 50),
     );
+    const notificationsResponse = identity.userId.trim()
+      ? await fetchProjectNotifications(projectId, identity.userId.trim())
+      : { notifications: [] };
 
     startTransition(() => {
       setServerSnapshot(response.snapshot);
       setPendingMutation(null);
       setActivity(buildActivityFeed(recentEventsResponse.events));
+      setNotifications(sortNotifications(notificationsResponse.notifications));
+      setTaskWindow({
+        hasMoreTasks: response.page?.hasMore ?? false,
+        isLoadingMoreTasks: false,
+        nextTaskCursor: response.page?.nextCursor ?? null,
+        totalTaskCount: response.page?.totalCount ?? response.snapshot.tasks.length,
+      });
       setViewers([]);
       setError(null);
     });
 
     return response.snapshot;
-  });
-
-  const loadMoreTasks = useEffectEvent(async (): Promise<void> => {
-    const snapshot = snapshotRef.current;
-    if (!snapshot?.taskPage.hasMore || !snapshot.taskPage.nextCursor) {
-      return;
-    }
-
-    setIsLoadingMoreTasks(true);
-
-    try {
-      const response = await fetchProjectTaskPage(projectId, {
-        after: snapshot.taskPage.nextCursor,
-        limit: 100,
-      });
-
-      startTransition(() => {
-        setServerSnapshot((current) =>
-          current ? mergeTaskPage(current, response.page) : current,
-        );
-        setError(null);
-      });
-    } catch (loadMoreError) {
-      startTransition(() => {
-        setError(toErrorMessage(loadMoreError));
-      });
-      throw loadMoreError;
-    } finally {
-      setIsLoadingMoreTasks(false);
-    }
   });
 
   useEffect(() => {
@@ -204,12 +261,31 @@ export function useProjectSync(
       setConnectionStatus("loading");
 
       try {
-        const snapshot = await refreshSnapshot();
-        if (!isActive) {
-          return;
-        }
+        if (!snapshotRef.current) {
+          const snapshot = await refreshSnapshot();
+          if (!isActive) {
+            return;
+          }
 
-        lastVersionRef.current = snapshot.version;
+          lastVersionRef.current = snapshot.version;
+        } else {
+          const eventsResponse = await fetchProjectEvents(
+            projectId,
+            Math.max(0, snapshotRef.current.version - 50),
+          );
+          const notificationsResponse = normalizedUserId
+            ? await fetchProjectNotifications(projectId, normalizedUserId)
+            : { notifications: [] };
+          if (!isActive) {
+            return;
+          }
+
+          startTransition(() => {
+            setActivity(buildActivityFeed(eventsResponse.events));
+            setNotifications(sortNotifications(notificationsResponse.notifications));
+            setError(null);
+          });
+        }
 
         const streamUrl = new URL(`/api/projects/${projectId}/stream`, window.location.origin);
         if (identity.clientId && normalizedUserId) {
@@ -252,6 +328,20 @@ export function useProjectSync(
                 setActivity((current) =>
                   eventsResponse.events.reduce(
                     (items, event) => applyActivityEvent(items, event),
+                    current,
+                  ),
+                );
+                setTaskWindow((current) => ({
+                  ...current,
+                  totalTaskCount: eventsResponse.events.reduce(
+                    (count, event) => updateTotalTaskCount(count, event),
+                    current.totalTaskCount,
+                  ),
+                }));
+                setNotifications((current) =>
+                  eventsResponse.events.reduce(
+                    (items, nextEvent) =>
+                      applyNotificationEvent(items, nextEvent, normalizedUserId, snapshotRef.current),
                     current,
                   ),
                 );
@@ -320,6 +410,89 @@ export function useProjectSync(
     };
   }, [identity.clientId, identity.userId, projectId]);
 
+  const loadMoreTasks = useEffectEvent(async (): Promise<void> => {
+    const currentWindow = taskWindowRef.current;
+    if (
+      currentWindow.isLoadingMoreTasks ||
+      !currentWindow.hasMoreTasks ||
+      !currentWindow.nextTaskCursor
+    ) {
+      return;
+    }
+
+    startTransition(() => {
+      setTaskWindow((windowState) => ({
+        ...windowState,
+        isLoadingMoreTasks: true,
+      }));
+      setError(null);
+    });
+
+    try {
+      const response = await fetchProjectTaskPage(projectId, {
+        after: currentWindow.nextTaskCursor,
+        limit: TASK_PAGE_SIZE,
+      });
+
+      startTransition(() => {
+        setServerSnapshot((current) =>
+          current ? mergeTaskPage(current, response.page) : current,
+        );
+        setTaskWindow({
+          hasMoreTasks: response.page.hasMore,
+          isLoadingMoreTasks: false,
+          nextTaskCursor: response.page.nextCursor,
+          totalTaskCount: response.page.totalCount,
+        });
+      });
+    } catch (loadMoreError) {
+      startTransition(() => {
+        setTaskWindow((windowState) => ({
+          ...windowState,
+          isLoadingMoreTasks: false,
+        }));
+        setError(toErrorMessage(loadMoreError));
+      });
+    }
+  });
+
+  const refresh = useEffectEvent(async (): Promise<void> => {
+    startTransition(() => {
+      setError(null);
+      setConnectionStatus("loading");
+    });
+
+    try {
+      await refreshSnapshot();
+    } catch (refreshError) {
+      startTransition(() => {
+        setError(toErrorMessage(refreshError));
+        setConnectionStatus("reconnecting");
+      });
+      throw refreshError;
+    }
+  });
+
+  const updateCursor = useEffectEvent(async (cursor: PresenceCursor | null): Promise<void> => {
+    const normalizedUserId = identity.userId.trim();
+    if (!identity.clientId || !normalizedUserId) {
+      return;
+    }
+
+    const payload = JSON.stringify(cursor ?? null);
+    if (payload === lastCursorPayloadRef.current) {
+      return;
+    }
+
+    lastCursorPayloadRef.current = payload;
+    await updateProjectPresence(projectId, {
+      clientId: identity.clientId,
+      userId: normalizedUserId,
+      location: "project",
+      cursor,
+    });
+  });
+
   const commitDispatch = useEffectEvent(
     async (
       input: DispatchInput,
@@ -343,7 +516,7 @@ export function useProjectSync(
 
       const commitInput = async (
         mutationInput: AppendEventInput,
-        mutationBaseSnapshot: LoadedProjectSnapshot,
+        mutationBaseSnapshot: ProjectSnapshot,
       ): Promise<ProjectEvent> => {
         const response = await appendProjectEvent(projectId, mutationInput);
         const historyEntry =
@@ -522,17 +695,20 @@ export function useProjectSync(
     connectionStatus,
     dispatch,
     error,
-    hasMoreTasks: serverSnapshot?.taskPage.hasMore ?? false,
+    hasMoreTasks: taskWindow.hasMoreTasks,
     isMutating: pendingMutation !== null,
-    isLoadingMoreTasks,
+    isLoadingMoreTasks: taskWindow.isLoadingMoreTasks,
     loadMoreTasks,
+    notifications,
+    refresh,
     redo,
     snapshot:
       serverSnapshot && pendingMutation
         ? deriveVisibleSnapshot(serverSnapshot, pendingMutation.optimisticEvent)
         : serverSnapshot,
-    totalTaskCount: serverSnapshot?.taskPage.totalCount ?? 0,
+    totalTaskCount: taskWindow.totalTaskCount,
     undo,
+    updateCursor,
     viewers,
   };
 }
