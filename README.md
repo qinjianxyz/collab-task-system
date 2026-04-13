@@ -4,6 +4,8 @@ Real-time collaborative task management built on event sourcing.
 
 Two browser contexts. Sub-second sync. No Firebase, Supabase, or managed realtime database.
 
+> **Demo video:** [Watch the walkthrough](https://github.com/qinjianxyz/collab-task-system/releases/download/v1.0.0-demo/task-collab-submission.mov) — live two-tab collaboration, dependency validation, presence, undo/redo, kanban view, and the architectural reasoning behind event sourcing and per-entity versioning.
+
 ## What You Can Do
 
 - create and reopen multiple projects from the landing page
