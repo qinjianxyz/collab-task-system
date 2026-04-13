@@ -122,46 +122,13 @@ Measured locally against a production build with PostgreSQL 17 + Redis 7:
 
 See [docs/scaling.md](./docs/scaling.md) and [load/README.md](./load/README.md).
 
-## Architecture
+## Further Reading
 
-```text
-Browser
-  | optimistic action
-  v
-Next.js API route
-  | validate + append event + apply projection
-  | one SQL transaction
-  v
-PostgreSQL
-  | publish committed event
-  v
-Project event bus
-  | in-memory fallback or Redis pub/sub
-  v
-SSE stream
-  | bounded buffer + heartbeat
-  v
-Connected clients
-```
-
-The deeper presentation docs are designed to be shown on screen after the live demo:
-
-- [docs/architecture.md](./docs/architecture.md): write path, projection model, reconnect, and failure handling
-- [docs/scaling.md](./docs/scaling.md): read-path strategy, task windowing, virtualization, and measured results
-- [docs/demo/slides.md](./docs/demo/slides.md): compact visual reference for the Q&A segment
-
-Further reading:
-
-- [docs/architecture.md](./docs/architecture.md)
-- [docs/api.md](./docs/api.md)
-- [docs/demo/README.md](./docs/demo/README.md)
-- [docs/demo/video-script.md](./docs/demo/video-script.md)
-- [docs/demo/slides.md](./docs/demo/slides.md)
-- [docs/demo/runbook.md](./docs/demo/runbook.md)
-- [docs/demo-script.md](./docs/demo-script.md)
-- [docs/operations.md](./docs/operations.md)
-- [docs/scaling.md](./docs/scaling.md)
-- [docs/release-checklist.md](./docs/release-checklist.md)
+- [docs/architecture.md](./docs/architecture.md) — write path, projection model, reconnect, failure handling
+- [docs/scaling.md](./docs/scaling.md) — read-path strategy, task windowing, virtualization, measured results
+- [docs/api.md](./docs/api.md) — route reference and OpenAPI contract
+- [docs/demo/README.md](./docs/demo/README.md) — demo walkthrough
+- [docs/operations.md](./docs/operations.md) — health checks and runtime config
 
 ## API Surface
 
