@@ -15,23 +15,71 @@ function createJsonRequest(url: string, method: string, body?: unknown): Request
   });
 }
 
-async function readChunk(
+type SseReader = {
+  buffer: string;
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+};
+
+function createSseReader(
   reader: ReadableStreamDefaultReader<Uint8Array>,
+): SseReader {
+  return {
+    buffer: "",
+    reader,
+  };
+}
+
+async function readEvent(
+  sseReader: SseReader,
   timeoutMs = 3_000,
 ): Promise<string> {
-  const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
-  });
+  const deadline = Date.now() + timeoutMs;
 
-  const read = reader.read().then(({ done, value }) => {
-    if (done || !value) {
-      throw new Error("stream closed before delivering a chunk");
+  while (Date.now() < deadline) {
+    const separatorIndex = sseReader.buffer.indexOf("\n\n");
+    if (separatorIndex >= 0) {
+      const event = sseReader.buffer.slice(0, separatorIndex);
+      sseReader.buffer = sseReader.buffer.slice(separatorIndex + 2);
+      if (event.trim().length > 0) {
+        return event;
+      }
+      continue;
     }
 
-    return new TextDecoder().decode(value);
-  });
+    const remainingMs = Math.max(deadline - Date.now(), 1);
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), remainingMs);
+    });
 
-  return Promise.race([read, timeout]);
+    const read = sseReader.reader.read().then(({ done, value }) => {
+      if (done || !value) {
+        throw new Error("stream closed before delivering a chunk");
+      }
+
+      sseReader.buffer += new TextDecoder().decode(value);
+    });
+
+    await Promise.race([read, timeout]);
+  }
+
+  throw new Error(`timed out after ${timeoutMs}ms`);
+}
+
+async function readUntilEvent(
+  sseReader: SseReader,
+  matcher: (event: string) => boolean,
+  timeoutMs = 3_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const event = await readEvent(sseReader, Math.max(deadline - Date.now(), 1));
+    if (matcher(event)) {
+      return event;
+    }
+  }
+
+  throw new Error(`timed out after ${timeoutMs}ms`);
 }
 
 describe("project SSE stream", () => {
@@ -78,8 +126,8 @@ describe("project SSE stream", () => {
     expect(streamResponse.status).toBe(200);
     expect(streamResponse.body).toBeTruthy();
 
-    const reader = streamResponse.body!.getReader();
-    const versionChunk = await readChunk(reader);
+    const reader = createSseReader(streamResponse.body!.getReader());
+    const versionChunk = await readEvent(reader);
     expect(versionChunk).toContain("event: version");
 
     const appendResponse = await appendProjectEvent(
@@ -106,12 +154,32 @@ describe("project SSE stream", () => {
 
     expect(appendResponse.status).toBe(201);
 
-    const eventChunk = await readChunk(reader);
+    const eventChunk = await readEvent(reader);
     expect(eventChunk).toContain("event: project-event");
     expect(eventChunk).toContain("\"id\":\"evt_task_create\"");
 
     abortController.abort();
-    await reader.cancel();
+    await reader.reader.cancel();
+  });
+
+  it("returns 422 when opening a stream for a missing project", async () => {
+    const { GET: openStream } = await import(
+      "../../app/api/projects/[projectId]/stream/route"
+    );
+
+    const response = await openStream(
+      new Request(`${BASE_URL}/api/projects/missing-project/stream`),
+      {
+        params: Promise.resolve({ projectId: "missing-project" }),
+      },
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "domain_error",
+      },
+    });
   });
 
   it(
@@ -157,32 +225,47 @@ describe("project SSE stream", () => {
       },
     );
 
-    const firstReader = firstStreamResponse.body!.getReader();
-    const secondReader = secondStreamResponse.body!.getReader();
+    const firstReader = createSseReader(firstStreamResponse.body!.getReader());
+    const secondReader = createSseReader(secondStreamResponse.body!.getReader());
 
-    await readChunk(firstReader);
-    const firstPresenceChunk = await readChunk(firstReader);
+    await readEvent(firstReader);
+    const firstPresenceChunk = await readUntilEvent(
+      firstReader,
+      (event) => event.includes("event: presence"),
+    );
     expect(firstPresenceChunk).toContain("event: presence");
     expect(firstPresenceChunk).toContain("\"userId\":\"alice\"");
 
-    await readChunk(secondReader);
-    const secondPresenceChunk = await readChunk(secondReader);
+    await readEvent(secondReader);
+    const secondPresenceChunk = await readUntilEvent(
+      secondReader,
+      (event) => event.includes("event: presence"),
+    );
     expect(secondPresenceChunk).toContain("event: presence");
     expect(secondPresenceChunk).toContain("\"userId\":\"bob\"");
 
-    const fanoutChunk = await readChunk(firstReader);
+    const fanoutChunk = firstPresenceChunk.includes("\"userId\":\"bob\"")
+      ? firstPresenceChunk
+      : await readUntilEvent(
+          firstReader,
+          (event) => event.includes("event: presence") && event.includes("\"userId\":\"bob\""),
+        );
     expect(fanoutChunk).toContain("event: presence");
     expect(fanoutChunk).toContain("\"userId\":\"bob\"");
 
     secondAbortController.abort();
-    await secondReader.cancel();
+    await secondReader.reader.cancel();
 
-    const removalChunk = await readChunk(firstReader, 7_000);
+    const removalChunk = await readUntilEvent(
+      firstReader,
+      (event) => event.includes("event: presence") && !event.includes("\"userId\":\"bob\""),
+      7_000,
+    );
     expect(removalChunk).toContain("event: presence");
     expect(removalChunk).not.toContain("\"userId\":\"bob\"");
 
     firstAbortController.abort();
-    await firstReader.cancel();
+    await firstReader.reader.cancel();
     },
     10_000,
   );

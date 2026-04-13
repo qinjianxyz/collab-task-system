@@ -71,7 +71,8 @@ select {
 
 .landing-shell {
   display: grid;
-  place-items: center;
+  align-content: center;
+  gap: 20px;
   min-height: 100vh;
 }
 
@@ -87,7 +88,7 @@ select {
 }
 
 .landing-card {
-  width: min(640px, 100%);
+  width: min(720px, 100%);
   padding: 32px;
 }
 
@@ -124,7 +125,8 @@ select {
 .comment-composer,
 .comment-list,
 .dependency-selector,
-.shortcut-list {
+.shortcut-list,
+.project-catalog {
   display: grid;
   gap: 12px;
 }
@@ -172,6 +174,11 @@ select {
     background 160ms ease;
 }
 
+.danger-button {
+  background: rgba(170, 51, 72, 0.12);
+  color: var(--error);
+}
+
 .primary-button {
   background: var(--accent);
   color: white;
@@ -199,11 +206,20 @@ select {
 }
 
 .error-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin: 16px 0 0;
   padding: 12px 14px;
   border-radius: 14px;
   background: rgba(170, 51, 72, 0.12);
   color: var(--error);
+}
+
+.error-banner p {
+  margin: 0;
 }
 
 .workspace-header {
@@ -218,6 +234,7 @@ select {
 .header-stack {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .header-controls {
@@ -225,6 +242,14 @@ select {
   flex-wrap: wrap;
   align-items: end;
   gap: 12px;
+  min-width: 0;
+}
+
+.status-stack {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .history-controls,
@@ -267,22 +292,36 @@ select {
 }
 
 .status-pill {
+  display: inline-flex;
+  align-items: center;
   border-radius: 999px;
-  padding: 10px 14px;
-  font-size: 0.88rem;
+  padding: 4px 12px;
+  font-size: 0.78rem;
   font-weight: 700;
   text-transform: capitalize;
+  white-space: nowrap;
 }
 
-.status-connected {
+.status-positive {
   background: var(--accent-soft);
   color: var(--accent);
 }
 
-.status-reconnecting,
-.status-loading {
+.status-warning {
   background: var(--warning-soft);
   color: var(--warning);
+}
+
+.status-neutral {
+  background: rgba(30, 36, 40, 0.08);
+  color: var(--ink);
+}
+
+.status-detail {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
 }
 
 .panel {
@@ -421,6 +460,10 @@ select {
   align-items: end;
 }
 
+.workspace-main {
+  min-width: 0;
+}
+
 .grow-field {
   min-width: 0;
 }
@@ -429,6 +472,33 @@ select {
   display: grid;
   gap: 16px;
   margin-top: 20px;
+}
+
+.virtual-task-list {
+  position: relative;
+  max-height: 72vh;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.virtual-task-spacer {
+  position: relative;
+}
+
+.virtual-task-window {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  display: grid;
+  gap: 16px;
+}
+
+.virtual-task-row {
+  width: 100%;
+}
+
+.virtual-task-status {
+  margin: 12px 0 0;
 }
 
 .task-card {
@@ -487,6 +557,59 @@ select {
   margin: 16px 0;
 }
 
+.catalog-header,
+.project-catalog-item,
+.task-card-actions,
+.comment-header,
+.comment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.catalog-header,
+.project-catalog-item,
+.comment-header {
+  justify-content: space-between;
+  align-items: start;
+}
+
+.project-catalog-card h2 {
+  margin: 8px 0 0;
+  font-size: 1.35rem;
+}
+
+.project-catalog-item {
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--panel-strong);
+}
+
+.project-catalog-item:hover {
+  border-color: rgba(23, 111, 92, 0.28);
+  background: rgba(23, 111, 92, 0.06);
+}
+
+.project-catalog-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.project-catalog-copy p,
+.project-catalog-meta {
+  margin: 0;
+  color: var(--muted);
+}
+
+.project-catalog-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 150px;
+  text-align: right;
+  font-size: 0.9rem;
+}
+
 .comment-item {
   padding: 12px 14px;
   border-radius: 16px;
@@ -494,13 +617,105 @@ select {
   border: 1px solid var(--border);
 }
 
+.comment-item strong,
 .comment-item p {
-  margin: 6px 0 0;
+  margin: 0;
+}
+
+.comment-item p {
+  margin-top: 6px;
 }
 
 .activity-panel {
   position: sticky;
   top: 24px;
+  min-width: 0;
+}
+
+.workspace-side-column {
+  display: grid;
+  gap: 16px;
+}
+
+.notifications-panel {
+  position: sticky;
+  top: 24px;
+}
+
+.task-cursor-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.viewer-chip-active {
+  background: rgba(65, 117, 102, 0.12);
+  color: var(--accent);
+}
+
+.view-toggle {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.view-toggle-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.kanban-board {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(220px, 1fr));
+  gap: 16px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.kanban-column {
+  min-width: 220px;
+}
+
+.kanban-column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.kanban-column-header h3,
+.kanban-card h4 {
+  margin: 0;
+}
+
+.kanban-card-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.kanban-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  background: var(--panel-strong);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  cursor: grab;
+}
+
+.kanban-dropzone {
+  min-height: 14px;
+  border-radius: 10px;
+}
+
+.task-description-input {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
 }
 
 .activity-header h2 {
@@ -579,9 +794,20 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .kanban-board {
+    grid-template-columns: 1fr;
+  }
+
   .dependency-header,
-  .dependency-option-copy {
+  .dependency-option-copy,
+  .project-catalog-item,
+  .comment-header,
+  .comment-actions {
     display: grid;
+  }
+
+  .project-catalog-meta {
+    text-align: left;
   }
 
   .workspace-body {
@@ -590,5 +816,68 @@ select {
 
   .activity-panel {
     position: static;
+  }
+
+  .notifications-panel {
+    position: static;
+  }
+}
+
+@media (max-width: 1080px) {
+  .workspace-body {
+    grid-template-columns: 1fr;
+  }
+
+  .task-form {
+    grid-template-columns: 1fr;
+  }
+
+  .activity-panel {
+    position: static;
+  }
+
+  .notifications-panel {
+    position: static;
+  }
+
+  .workspace-header {
+    align-items: start;
+  }
+
+  .header-controls {
+    width: 100%;
+  }
+
+  .compact-field {
+    flex: 1 1 280px;
+    min-width: 0;
+  }
+
+  .status-stack {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .history-controls {
+    grid-auto-flow: column;
+    justify-content: start;
+  }
+}
+
+@media (max-width: 960px) {
+  .dependency-header,
+  .dependency-option-copy,
+  .task-card-header {
+    display: grid;
+  }
+
+  .task-card-actions {
+    justify-content: start;
+  }
+
+  .dependency-options,
+  .dependency-selected,
+  .task-meta {
+    grid-template-columns: 1fr;
   }
 }

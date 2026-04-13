@@ -1,85 +1,100 @@
 # Demo Runbook
 
-## Before Recording
-
-Run the app:
+## Start The App
 
 ```bash
 docker compose up --build
 ```
 
-If `3000` is unavailable:
+If `3000` is occupied:
 
 ```bash
 APP_PORT=8100 docker compose up --build
 ```
 
-In a second terminal, seed both demo projects:
+## Seed The Two Demo Projects
 
 ```bash
 APP_PORT=8100 bun run seed:demo
 APP_PORT=8100 TASK_COUNT=300 bun run seed:scale
+
+# optional heavier scale proof
+APP_PORT=8100 TASK_COUNT=10000 bun run seed:scale
+
+# OSS-reference-grade stress proof
+APP_PORT=8100 TASK_COUNT=30000 bun run seed:scale
 ```
 
-Copy the two printed `url` values into your notes:
+Record the two returned URLs:
 
 - realistic walkthrough URL
-- benchmark walkthrough URL
+- scale benchmark URL
 
-Open two browser contexts, not two tabs in the same identity container:
+## Recording Setup
 
-- one normal window
-- one incognito window or separate profile
-
-Set two different display names so presence is visible.
+- use two browser contexts, not two tabs in one profile
+- set different display names so presence is visible
+- keep [README.md](../../README.md), [architecture.md](../architecture.md), and [scaling.md](../scaling.md) ready for the Q&A portion
 
 ## Recording Order
 
-1. Open the realistic walkthrough URL.
-2. Open the same URL in the second browser context.
-3. Add a task, set prerequisites, and show the update in both contexts.
-4. Change task status and show convergence.
-5. Add a comment and point at the activity feed.
-6. Use undo and redo.
-7. Point at presence chips.
-8. Open the root `README.md`.
-9. Walk through `Architecture At A Glance`, `Why Event Sourcing Is The Right Fit`, and `Current State And Honest Tradeoffs`.
-10. Open the benchmark URL and show the larger project.
-11. Use `docs/architecture.md` and `docs/scaling.md` only for deeper follow-up questions.
+1. Open the realistic walkthrough URL in two browser contexts.
+2. Show presence chips with two names.
+3. Add a task.
+4. Use `Blocked by` to pick a prerequisite.
+5. Show the new task appear in the second browser context.
+6. Change status in the second browser context and show the first one converge.
+7. Focus a comment box in one browser context and point out the live cursor badge in the other.
+8. Add a comment with `@alice` or `@bob`, then show the notification panel update.
+9. Edit the task description in one browser context and show the collaborative description textarea update in the other.
+10. Add a comment, then edit it, then delete it.
+11. Delete a task.
+12. Trigger a blocked transition and show the explicit validation error.
+13. Use undo and redo.
+14. Switch to Board view and drag a card into another status column.
+11. Open `README.md` and walk through:
+    - What You Can Do
+    - Architecture At A Glance
+    - Why Event Sourcing Instead Of CRUD
+    - How The 2MB Constraint Is Handled
+15. Open the scale benchmark URL.
+16. Show the first task window, then scroll to load more.
+17. Point out that the benchmark view uses cursor-paged reads and virtualized rendering.
+18. Use `docs/architecture.md` and `docs/scaling.md` only for follow-up questions.
 
 ## What To Emphasize
 
 - no managed realtime database
 - event log as the source of truth
-- append plus projection in one transaction
-- optimistic client apply with ordered server reconciliation
-- dependency rules enforced on the write path
-- separate realistic and benchmark seeds for honest demo coverage
+- append + projection in one transaction
+- optimistic UI with ordered server reconciliation
+- live cursor and collaborative description layers stay outside the durable log
+- board drag-and-drop still writes normal `task.update` events
+- domain rules enforced on the write path
+- paged reads and virtualized rendering for larger task sets
 
 ## What Not To Waste Time On
 
 - Docker logs
 - long test output
-- implementation details before showing the product
-- claiming scale features that are still documented as future work
+- file-by-file code browsing before showing behavior
+- claiming distributed scale features that are not shipped
 
-## If Something Goes Wrong
+## Recovery Steps
 
-If presence does not show two viewers:
+If presence is missing:
 
-- confirm you used two browser contexts
-- confirm both contexts have different display names
+- verify two browser contexts are open
+- verify each has a different display name
 
-If the app is not reachable:
+If the app is unreachable:
 
-- check the selected port
+- verify the chosen port
 - rerun `docker compose up --build`
 
-If you need fresh demo data:
+If you need fresh URLs:
 
 ```bash
 APP_PORT=8100 bun run seed:demo
 APP_PORT=8100 TASK_COUNT=300 bun run seed:scale
 ```
-
-Use the newly printed URLs and continue.

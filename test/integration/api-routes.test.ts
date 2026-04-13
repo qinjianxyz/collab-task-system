@@ -209,4 +209,173 @@ describe("project API routes", () => {
 
     expect(presenceWrite.status).toBe(422);
   });
+
+  it("rejects deleting a task that other tasks still depend on", async () => {
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { POST: appendProjectEvent } = await import(
+      "../../app/api/projects/[projectId]/events/route"
+    );
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Dependencies",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+    const { projectId } = await createResponse.json();
+
+    const createTaskA = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_a",
+        entityId: "task_a",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_000,
+        expectedVersion: 1,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Finalize auth",
+            status: "done",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+    expect(createTaskA.status).toBe(201);
+
+    const createTaskB = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_b",
+        entityId: "task_b",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_500,
+        expectedVersion: 2,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Ship dashboard",
+            status: "todo",
+            projectId,
+            dependencies: ["task_a"],
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+    expect(createTaskB.status).toBe(201);
+
+    const deleteTaskA = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_a_delete",
+        entityId: "task_a",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_001_000,
+        expectedVersion: 3,
+        action: {
+          type: "task.delete",
+          data: {},
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(deleteTaskA.status).toBe(422);
+    await expect(deleteTaskA.json()).resolves.toMatchObject({
+      error: {
+        code: "domain_error",
+      },
+    });
+  });
+
+  it("rejects updating or deleting comments that do not exist", async () => {
+    const { POST: createProject } = await import("../../app/api/projects/route");
+    const { POST: appendProjectEvent } = await import(
+      "../../app/api/projects/[projectId]/events/route"
+    );
+
+    const createResponse = await createProject(
+      createJsonRequest(`${BASE_URL}/api/projects`, "POST", {
+        name: "Comments",
+        clientId: "client_alpha",
+        userId: "alice",
+      }),
+    );
+    const { projectId } = await createResponse.json();
+
+    const createTask = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_task_comments",
+        entityId: "task_comments",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_000,
+        expectedVersion: 1,
+        action: {
+          type: "task.create",
+          data: {
+            title: "Review copy",
+            status: "todo",
+            projectId,
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+    expect(createTask.status).toBe(201);
+
+    const updateMissingComment = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_comment_missing_update",
+        entityId: "comment_missing",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_000_500,
+        expectedVersion: 2,
+        action: {
+          type: "comment.update",
+          data: {
+            content: "Edited",
+          },
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(updateMissingComment.status).toBe(422);
+
+    const deleteMissingComment = await appendProjectEvent(
+      createJsonRequest(`${BASE_URL}/api/projects/${projectId}/events`, "POST", {
+        id: "evt_comment_missing_delete",
+        entityId: "comment_missing",
+        clientId: "client_alpha",
+        userId: "alice",
+        timestamp: 1_716_000_001_000,
+        expectedVersion: 2,
+        action: {
+          type: "comment.delete",
+          data: {},
+        },
+      }),
+      {
+        params: Promise.resolve({ projectId }),
+      },
+    );
+
+    expect(deleteMissingComment.status).toBe(422);
+  });
 });

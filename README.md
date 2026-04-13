@@ -1,16 +1,24 @@
 # Collab Task System
 
-Real-time collaborative task management built on an event log instead of CRUD.
-Open the same project in two browser contexts, make a change in one, and the other converges over SSE without shipping the full project state again.
+Real-time collaborative task management built on event sourcing.
 
-## What This Repository Proves
+Two browser contexts. Sub-second sync. No Firebase, Supabase, or managed realtime database.
 
-- Multiple projects can be created and opened from the same app.
-- Tasks can be created, updated, blocked by prerequisites, and commented on in real time.
-- Two browser contexts stay consistent through optimistic writes, ordered commits, and SSE fan-out.
-- Undo and redo are ordinary events appended back through the same event store.
-- Presence and the activity feed are projections over the same stream, not separate systems.
-- The same architecture is future-proof for larger projects because it synchronizes deltas, not whole project documents.
+## What You Can Do
+
+- create and reopen multiple projects from the landing page
+- create, update, and delete tasks
+- add prerequisites with explicit `Blocked by` semantics
+- enforce dependency rules and blocked status transitions on the server
+- create, edit, and delete comments in real time
+- watch two browser contexts converge over SSE
+- see live cursor badges when another collaborator is commenting or editing a task
+- edit task descriptions collaboratively with a Yjs-backed shared document
+- receive `@mentions` as a durable notification projection
+- use undo and redo through inverted events
+- see presence and a live activity feed
+- switch from detailed list view to a drag-and-drop Kanban board
+- open a large benchmark project that loads tasks in paged windows and renders them through a virtualized list
 
 ## Quick Start
 
@@ -20,7 +28,7 @@ docker compose up --build
 
 Open `http://localhost:3000`.
 
-If `3000` is already busy on your machine:
+If `3000` is busy:
 
 ```bash
 APP_PORT=8100 docker compose up --build
@@ -28,163 +36,144 @@ APP_PORT=8100 docker compose up --build
 
 Then open `http://localhost:8100`.
 
-## Seed The Two Demo Projects
+## Seed The Demo Projects
 
-The repository ships two separate seeds because the evaluator path and the scale path are different stories.
+The repository ships two seeds because the product walkthrough and the scale walkthrough are different stories.
 
 ```bash
-# realistic product walkthrough
+# realistic evaluator walkthrough
 APP_PORT=8100 bun run seed:demo
 
-# benchmark dataset for long-list / larger-project walkthrough
+# synthetic scale benchmark
 APP_PORT=8100 TASK_COUNT=300 bun run seed:scale
+
+# heavier benchmark for the 10,000+ task challenge
+APP_PORT=8100 TASK_COUNT=10000 bun run seed:scale
+
+# OSS-reference-grade stress proof
+APP_PORT=8100 TASK_COUNT=30000 bun run seed:scale
 ```
 
-Each command prints JSON with a `url` field. Use the first URL for the product demo and the second URL for the benchmark walkthrough.
+Each command prints JSON with a `url`. Use:
 
-## What You Can Demo Right Now
+- the realistic URL for collaboration and domain behavior
+- the scale URL for paged reads and virtualized rendering
 
-### Product Walkthrough
+## What The Evaluator Should See
 
-- Create or open a project.
-- Add a task and select prerequisite tasks under `Blocked by`.
-- Open the same project in a second browser context.
-- Change status, add comments, and watch both clients converge.
-- Press `Ctrl+Z` / `Ctrl+Shift+Z` for undo and redo.
-- Use `?` to open keyboard shortcuts.
-- Show presence chips and the live activity feed.
+### Realistic Project
 
-### Why The Dependency UI Looks The Way It Does
+Use the `Ship Collab Task System` seed to show:
 
-The composer does not use the checkbox list as a completion control. Each selected row means:
+- believable task names, owners, comments, and blockers
+- two-context sync
+- blocked transition errors with concrete dependency names
+- comment create/edit/delete
+- collaborative description editing
+- mention notifications
+- live cursor badges on active tasks
+- task delete
+- undo/redo
+- presence and activity
+- board view with drag-and-drop reorder
 
-`this new task is blocked by this existing task`
+### Scale Project
 
-That is why the UI is labeled `Blocked by`, why completed tasks are hidden by default, and why blocked transition errors name the exact prerequisite that still needs to finish.
+Use the large synthetic seed to show:
+
+- the first project render only loads a task window, not the entire long list
+- follow-up task windows are fetched by cursor from `/api/projects/{projectId}/tasks`
+- the DOM only renders the visible task window instead of every loaded row at once
+- the same task model can switch into Kanban without changing the write path
 
 ## Architecture At A Glance
 
 ```text
-Browser A                      Browser B
-   |                              ^
-   | POST append command          | SSE committed event / presence
-   v                              |
-        Next.js route handlers
-                 |
-                 v
-        append event to Postgres
-      + apply projection in the
-         same SQL transaction
-                 |
-                 v
-       publish committed version
-                 |
-                 v
-            SSE broadcaster
+Client
+  | optimistic local apply
+  | POST append command
+  v
+Next.js route handler
+  | parse + validate + expectedVersion check
+  v
+append-only event log + projection tables
+  | same SQL transaction
+  v
+committed project version
+  | publish committed event
+  v
+SSE stream
+  v
+all connected clients
 ```
 
 This is the core claim of the project:
 
 - the event log is the source of truth
-- read models are projections
-- the client sync loop converges on committed versions
-- collaboration features are projections over the same stream
+- the current UI state is a projection
+- realtime collaboration is a projection
+- undo/redo is a projection
+- the activity feed is a projection
+- mention notifications are a projection
 
-## Why Event Sourcing Is The Right Fit
+Ephemeral collaboration uses the same project transport shape without polluting the durable log:
 
-### Versus CRUD
+- presence viewers and live cursors are ephemeral SSE state
+- collaborative descriptions use a task-scoped Yjs document with durable checkpoints back through `task.update`
 
-| Concern | CRUD-first design | This repository |
+## Why Event Sourcing Instead Of CRUD
+
+| Concern | CRUD-first design | Collab Task System |
 | --- | --- | --- |
-| Real-time sync | bolt on sockets/polling around mutable rows | stream committed events |
-| Undo/redo | separate undo tables or ad hoc snapshots | invert the original event |
-| Activity feed | separate audit subsystem | projection over the same event log |
-| Conflict handling | last write wins or ad hoc merges | optimistic concurrency with `expectedVersion` |
-| Large payloads | resend large objects or diff whole documents | ship small events after initial load |
+| Realtime sync | add sockets or polling around mutable rows | stream committed events |
+| Conflict handling | ad hoc merge or last-write-wins | optimistic concurrency via `expectedVersion` |
+| Undo/redo | separate history subsystem | invert the original event |
+| Activity feed | separate audit trail | projection over the same stream |
+| Large payloads | resend or diff large documents | ship small ordered changes and paged reads |
 
-### Why SSE Instead Of WebSockets
-
-This app only needs server-to-client fan-out after a client POSTs an append command. SSE is enough for that shape:
-
-- simple HTTP route
-- built-in browser reconnect behavior
-- easy version-based catch-up
-- no extra socket protocol for the evaluator path
+This is not a CRUD app with realtime bolted on. The architecture starts from the event stream, and the collaboration features fall out of that decision instead of being layered on later.
 
 ## Sync Flow
 
-1. The client loads a project snapshot.
-2. The client opens `/api/projects/:id/stream`.
-3. A local mutation is applied optimistically.
-4. The client POSTs an append command with `expectedVersion`.
-5. The server validates, commits the next version, updates projections, and broadcasts it.
-6. Other clients apply the committed event.
-7. On `409`, the client refreshes state and retries once against the latest version.
+1. Server-render the first task window for the project.
+2. Open the SSE stream for committed versions, events, and presence.
+3. Apply local writes optimistically.
+4. POST the append command with `expectedVersion`.
+5. Commit the event and projection update in the same SQL transaction.
+6. Broadcast the committed event.
+7. On `409`, refresh state and retry once against the latest version.
 
-That is how two browsers stay consistent without a managed realtime database.
+## How The 2MB Constraint Is Handled
 
-## Realistic Demo Project vs Scale Project
+Large projects are handled on the read path in three layers:
 
-### Realistic Demo Project
+1. initial project render boots with a cursor-paged task window
+2. additional task windows are fetched from `/api/projects/{projectId}/tasks`
+3. the task list is virtualized so the DOM only holds the visible rows
 
-The realistic seed is `Ship Collab Task System`.
+Steady-state collaboration still uses incremental events over SSE instead of rebroadcasting the whole project.
 
-It is intentionally narrative:
+## Index Strategy
 
-- named owners
-- meaningful task titles
-- comments and `@mentions`
-- dependency chains
-- blocked work, active work, and completed work
+The read path is indexed for the exact queries the app issues:
 
-Use this project when the evaluator wants to see product quality and collaboration behavior.
+- `events(project_id, version desc)` for event catch-up and versioned sync
+- `events(project_id, entity_id, version desc)` for entity-local history
+- `tasks(project_id, position)` for ordered task paging
+- `tasks(project_id, status, position)` for status-scoped task reads
+- `comments(task_id, created_at)` for task comment hydration
 
-### Scale Benchmark Project
+## API And DX
 
-The benchmark seed is intentionally synthetic:
+- OpenAPI contract: [docs/openapi.yaml](./docs/openapi.yaml)
+- API notes: [docs/api.md](./docs/api.md)
+- Architecture deep dive: [docs/architecture.md](./docs/architecture.md)
+- Scaling notes: [docs/scaling.md](./docs/scaling.md)
+- Load probes and results: [docs/load-testing.md](./docs/load-testing.md)
+- Demo runbook: [docs/demo/runbook.md](./docs/demo/runbook.md)
+- Continuous video script: [docs/demo/video-script.md](./docs/demo/video-script.md)
 
-- stable ordering
-- many tasks
-- predictable metadata
-- repeated comments at anchor points
-
-Use this project when the evaluator wants to inspect larger-project behavior and discuss the scaling path.
-
-## Current State And Honest Tradeoffs
-
-What is already shipped:
-
-- event-sourced write path
-- transactional projections
-- SSE-based two-context sync
-- optimistic UI with conflict retry
-- undo/redo
-- presence
-- activity feed
-- realistic demo seed and benchmark seed
-- unit and integration coverage around event logic and seed generation
-
-What is not yet shipped in this worktree:
-
-- real authentication
-- offline replay
-- cross-instance Redis fan-out
-- virtualized task rendering
-- cursor-based pagination
-
-Those next steps are documented because the architecture already supports them, but they are not being claimed as finished features here.
-
-## Why This Is Still A Strong Take-Home Solution
-
-The rubric is about architecting a scalable collaborative system without relying on a managed realtime database. This repository answers that directly:
-
-- it uses Next.js App Router
-- it keeps the write path transactional
-- it handles cross-client consistency explicitly
-- it transmits incremental updates instead of full project payloads
-- it models collaboration features as projections over an event log
-
-That is a more defensible foundation than a CRUD app with realtime bolted on later.
+CI is defined in [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) for the standalone project layout.
 
 ## Testing
 
@@ -194,10 +183,43 @@ bun run test
 bun run test:e2e
 ```
 
-## Demo And Architecture Docs
+Load probes:
 
-- [Architecture](./docs/architecture.md)
-- [Scaling Notes](./docs/scaling.md)
-- [Demo Index](./docs/demo/README.md)
-- [Demo Runbook](./docs/demo/runbook.md)
-- [Continuous Video Script](./docs/demo/video-script.md)
+```bash
+bun run load:append
+bun run load:task-page
+```
+
+## Honest Tradeoffs
+
+Shipped:
+
+- transactional event writes
+- optimistic concurrency
+- SSE fan-out
+- Redis-capable event fan-out with in-memory fallback
+- write-path rate limiting with `429` retry hints
+- bounded SSE buffering with reconnect-driven recovery for slow consumers
+- task dependencies and transition validation
+- task/comment CRUD in the UI
+- live cursor badges
+- collaborative task descriptions
+- mention notifications
+- presence
+- activity feed
+- undo/redo
+- Kanban drag-and-drop reorder through normal `task.update` events
+- paged task reads
+- virtualized benchmark rendering
+- verified `10,000`-task seed path through the real event/projection pipeline
+- verified `30,000`-task seed path through the real event/projection pipeline in `750.71s`
+- load probes, OpenAPI, and CI config
+
+Not shipped:
+
+- real authentication
+- offline replay
+- distributed Redis fan-out
+- multi-node soak benchmarks
+
+Those are the next operational steps, not features being overstated as complete here.

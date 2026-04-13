@@ -78,7 +78,11 @@ export function createPresenceStore(
     clearRemoval(projectId, viewer.clientId);
 
     const projectViewers = viewersByProject.get(projectId) ?? new Map<string, PresenceViewer>();
-    projectViewers.set(viewer.clientId, viewer);
+    const existingViewer = projectViewers.get(viewer.clientId);
+    projectViewers.set(viewer.clientId, {
+      ...viewer,
+      connectedAt: existingViewer?.connectedAt ?? viewer.connectedAt,
+    });
     viewersByProject.set(projectId, projectViewers);
     emit(projectId);
   }

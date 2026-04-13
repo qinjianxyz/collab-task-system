@@ -28,7 +28,9 @@ function sortByPosition(tasks: Task[]): Task[] {
 }
 
 export function formatTaskStatusLabel(status: TaskStatus): string {
-  return status.replaceAll("_", " ");
+  return status
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 export function buildDependencyCandidates(

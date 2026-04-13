@@ -77,6 +77,16 @@ async function findExistingEvent(
   return existing.rows[0] ? toProjectEvent(existing.rows[0]) : null;
 }
 
+export async function ensureProjectExists(projectId: string): Promise<void> {
+  const result = await withTransaction(async (client) =>
+    client.query<{ id: string }>("select id from projects where id = $1", [projectId]),
+  );
+
+  if (!result.rows[0]) {
+    throw new DomainError(`project ${projectId} does not exist`);
+  }
+}
+
 async function insertEvent(
   client: PoolClient,
   event: ProjectEvent,
@@ -297,7 +307,7 @@ export async function appendEvent(input: AppendEventInput): Promise<ProjectEvent
       }
     }
 
-    await validateTaskEvent(client, parsed);
+    await validateEvent(client, parsed);
 
     const event = toStoredEvent(parsed, currentVersion + 1, nextEntityVersion);
 
@@ -374,11 +384,20 @@ type TaskStateRow = {
   dependencies: string[] | null;
 };
 
+type CommentStateRow = {
+  id: string;
+  task_id: string;
+};
+
 async function validateTaskEvent(
   client: PoolClient,
   input: AppendEventInput,
 ): Promise<void> {
-  if (input.action.type !== "task.create" && input.action.type !== "task.update") {
+  if (
+    input.action.type !== "task.create" &&
+    input.action.type !== "task.update" &&
+    input.action.type !== "task.delete"
+  ) {
     return;
   }
 
@@ -403,6 +422,26 @@ async function validateTaskEvent(
   const dependencyGraph = Object.fromEntries(
     taskRows.rows.map((row) => [row.id, row.dependencies ?? []]),
   );
+
+  if (input.action.type === "task.delete") {
+    const task = tasksById.get(input.entityId);
+    if (!task) {
+      throw new DomainError(`task ${input.entityId} does not exist`);
+    }
+
+    const blockingDependents = taskRows.rows.filter((row) =>
+      (row.dependencies ?? []).includes(input.entityId),
+    );
+
+    if (blockingDependents.length > 0) {
+      const dependent = blockingDependents[0]!;
+      throw new DomainError(
+        `task "${task.title}" cannot be deleted because "${dependent.title}" still depends on it`,
+      );
+    }
+
+    return;
+  }
 
   const nextDependencies =
     input.action.type === "task.create"
@@ -449,4 +488,50 @@ async function validateTaskEvent(
   });
 
   assertTaskStatusTransitionAllowed(nextStatus, dependencyStates);
+}
+
+async function validateCommentEvent(
+  client: PoolClient,
+  input: AppendEventInput,
+): Promise<void> {
+  if (input.action.type === "comment.create") {
+    const task = await client.query<{ id: string }>(
+      `select id
+         from tasks
+        where id = $1
+          and project_id = $2`,
+      [input.action.data.taskId, input.projectId],
+    );
+
+    if (task.rowCount === 0) {
+      throw new DomainError(`task ${input.action.data.taskId} does not exist`);
+    }
+
+    return;
+  }
+
+  if (input.action.type !== "comment.update" && input.action.type !== "comment.delete") {
+    return;
+  }
+
+  const comment = await client.query<CommentStateRow>(
+    `select comments.id, comments.task_id
+       from comments
+       inner join tasks on tasks.id = comments.task_id
+      where comments.id = $1
+        and tasks.project_id = $2`,
+    [input.entityId, input.projectId],
+  );
+
+  if (comment.rowCount === 0) {
+    throw new DomainError(`comment ${input.entityId} does not exist`);
+  }
+}
+
+async function validateEvent(
+  client: PoolClient,
+  input: AppendEventInput,
+): Promise<void> {
+  await validateTaskEvent(client, input);
+  await validateCommentEvent(client, input);
 }

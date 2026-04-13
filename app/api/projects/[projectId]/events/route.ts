@@ -12,6 +12,10 @@ import {
   getEventsSince,
 } from "../../../../../src/server/events/event-store";
 import { publishProjectEvent } from "../../../../../src/server/realtime/project-stream";
+import {
+  getWriteRateLimiter,
+  RateLimitError,
+} from "../../../../../src/server/realtime/rate-limiter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,6 +48,17 @@ export async function POST(
   try {
     const { projectId } = await context.params;
     const body = await readJsonBody(request, appendProjectEventRequestSchema);
+    const limit = await getWriteRateLimiter().check(
+      `append:${projectId}:${body.userId}:${body.clientId}`,
+    );
+
+    if (!limit.allowed) {
+      throw new RateLimitError(
+        "too many write requests; retry later",
+        limit.retryAfterMs,
+      );
+    }
+
     const event = await appendEvent({
       ...body,
       projectId,
