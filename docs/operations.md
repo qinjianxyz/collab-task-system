@@ -111,8 +111,8 @@ Runtime readiness:
 Scale verification:
 
 ```bash
-bun scripts/seed-large-project.ts
-# see load/README.md for append, paged load, reconnect, and fanout probes
+TASK_COUNT=10000 bun run seed:scale
+# see load/README.md for append and paged load probes
 ```
 
 ## Notes

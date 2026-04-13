@@ -21,7 +21,7 @@ The test commands are expected to be self-bootstrapping from a clean clone after
 
 ## Scale Proof
 
-- run `bun run load:seed`
+- run `TASK_COUNT=10000 bun run seed:scale`
 - rerun the relevant load probes if the sync, projection, or buffering path changed
 - refresh `docs/scaling.md` if numbers changed materially
 

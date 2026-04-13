@@ -1,53 +1,46 @@
 # Load Harness
 
-These scripts prove the scale path against the real app, not mocked helpers.
+Runnable probes that measure the scale path against the real app.
 
 ## Prerequisites
 
 - Docker Desktop or a local PostgreSQL + Redis matching `docker-compose.yml`
-- App running with `DATABASE_URL` and `REDIS_URL`
-- `k6` binary, or the `grafana/k6` Docker image for the HTTP scenarios
+- App running (`docker compose up --build`)
 
-## Seed a large project
+## Seed projects
 
-```bash
-bun scripts/seed-large-project.ts
-# => {"projectId":"...","taskCount":10000,"durationMs":...}
-```
-
-Override the size with `TASK_COUNT=15000`.
-
-## HTTP scenarios (k6)
-
-If `k6` is installed locally:
+Two seed scripts create projects through the real event-store API:
 
 ```bash
-k6 run -e BASE_URL=http://127.0.0.1:3000 load/append-throughput.js
-k6 run -e BASE_URL=http://127.0.0.1:3000 -e PROJECT_ID=<seeded-project-id> load/paged-initial-load.js
-k6 run -e BASE_URL=http://127.0.0.1:3000 -e PROJECT_ID=<seeded-project-id> load/reconnect-pressure.js
+# realistic evaluator walkthrough (18 tasks, dependencies, comments)
+bun run seed:demo
+
+# scale benchmark (default 300, configurable)
+bun run seed:scale
+TASK_COUNT=10000 bun run seed:scale
+TASK_COUNT=30000 bun run seed:scale
 ```
 
-If you only have Docker Desktop:
+Both print JSON with a `url` you can open directly.
+
+## Append throughput
+
+Measures sequential event append latency through the HTTP API:
 
 ```bash
-docker run --rm -i \
-  -e BASE_URL=http://host.docker.internal:3000 \
-  -v "$PWD/load:/scripts" \
-  grafana/k6 run /scripts/append-throughput.js
+bun load/append-events.ts
+ITERATIONS=200 bun load/append-events.ts
 ```
 
-Swap the script path and add `-e PROJECT_ID=...` for the paged and reconnect scenarios.
+Prints min, max, average, and p95 latency per append.
 
-## SSE fanout probe
+## Paged task loading
 
-`load/realtime-fanout.js` is a Node 22 probe because vanilla `k6` does not ship a native SSE client.
+Seeds a project and measures cursor-based task page fetch times:
 
 ```bash
-node load/realtime-fanout.js
+bun load/task-page.ts
+TASK_COUNT=10000 PAGE_LIMIT=50 REPETITIONS=16 bun load/task-page.ts
 ```
 
-Useful env overrides:
-
-- `BASE_URL=http://127.0.0.1:3000`
-- `LISTENERS=50`
-- `EVENT_COUNT=10`
+Reports first-page and follow-up-page latency separately, since the first page may pay a cold-cache penalty.

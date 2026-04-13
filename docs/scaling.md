@@ -37,7 +37,7 @@ The measurements below were captured on April 11, 2026 against the exact code in
 Command:
 
 ```bash
-TASK_COUNT=10000 bun scripts/seed-large-project.ts
+TASK_COUNT=10000 bun run seed:scale
 ```
 
 Observed result:
@@ -97,15 +97,10 @@ browser cost stays bounded because rendering is virtualized
 Command:
 
 ```bash
-docker run --rm -i \
-  -e BASE_URL=http://host.docker.internal:3100 \
-  -e VUS=6 \
-  -e DURATION=15s \
-  -v "$PWD/load:/scripts" \
-  grafana/k6 run /scripts/append-throughput.js
+ITERATIONS=200 bun load/append-events.ts
 ```
 
-Observed result:
+Observed result (original k6 multi-VU run):
 
 - `2,713` successful appends
 - `177.5 req/s`
@@ -123,16 +118,10 @@ Interpretation:
 Command:
 
 ```bash
-docker run --rm -i \
-  -e BASE_URL=http://host.docker.internal:3100 \
-  -e PROJECT_ID=b60fd3ec-2071-4e9a-8c9d-f9dbcaa426b8 \
-  -e VUS=20 \
-  -e ITERATIONS=200 \
-  -v "$PWD/load:/scripts" \
-  grafana/k6 run /scripts/paged-initial-load.js
+TASK_COUNT=10000 bun load/task-page.ts
 ```
 
-Observed result:
+Observed result (original k6 multi-VU run):
 
 - `155.35ms p95`
 - `84.56ms` average HTTP request duration
@@ -145,18 +134,7 @@ Interpretation:
 
 ### 3. Reconnect Catch-Up
 
-Command:
-
-```bash
-docker run --rm -i \
-  -e BASE_URL=http://host.docker.internal:3100 \
-  -e PROJECT_ID=b60fd3ec-2071-4e9a-8c9d-f9dbcaa426b8 \
-  -e VUS=30 \
-  -e ITERATIONS=300 \
-  -e CATCHUP_WINDOW=250 \
-  -v "$PWD/load:/scripts" \
-  grafana/k6 run /scripts/reconnect-pressure.js
-```
+Measured using a k6 reconnect probe during initial development:
 
 Observed result:
 
@@ -171,14 +149,7 @@ Interpretation:
 
 ### 4. SSE Fanout
 
-Command:
-
-```bash
-BASE_URL=http://127.0.0.1:3100 \
-LISTENERS=25 \
-EVENT_COUNT=5 \
-mise exec node@22 -- node load/realtime-fanout.js
-```
+Measured using a Node.js SSE fanout probe during initial development:
 
 Observed result:
 

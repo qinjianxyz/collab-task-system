@@ -31,7 +31,8 @@ If `localhost:3000` is occupied, set `APP_PORT` for Docker workflows or pass a d
 bun run typecheck
 bun run test
 bun run test:e2e
-bun run load:seed
+bun run seed:demo
+TASK_COUNT=10000 bun run seed:scale
 ```
 
 - `bun run test` bootstraps PostgreSQL and Redis automatically.

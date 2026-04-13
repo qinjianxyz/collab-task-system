@@ -1,16 +1,8 @@
 # Collab Task System
 
-Event-sourced collaborative task management with real-time sync, optimistic updates, undo/redo, presence, and measured scale proof.
+Real-time collaborative task management built on event sourcing.
 
-Two browser tabs. Sub-second sync. No managed real-time database.
-
-## Project Status
-
-`v0.1.0` is pre-1.0 and intentionally opinionated.
-
-- the core event-sourced architecture is stable enough for evaluation and OSS exploration
-- API and storage contracts may still evolve before `v1.0`
-- the `main` branch is the supported release line
+Two browser tabs. Sub-second sync. No Firebase, Supabase, or managed real-time database.
 
 ## Quick Start
 
@@ -25,22 +17,43 @@ If port `3000` is occupied:
 APP_PORT=3100 docker compose up --build
 ```
 
-The packaged stack includes:
+The packaged stack includes PostgreSQL 17, Redis 7, and Next.js 16.
 
-- PostgreSQL 17
-- Redis 7
-- Next.js 16
+## Seed The Demo Projects
 
-## What You’ll See
+The repo ships two seeds because the product walkthrough and the scale walkthrough are different stories.
 
-- create a project, add tasks, and watch two tabs converge over SSE
-- undo/redo with `Ctrl+Z` / `Ctrl+Shift+Z`
-- live presence and activity feed
-- dependency-aware status transitions
-- optimistic updates with `409` conflict recovery
-- paged, virtualized task rendering for large projects
+```bash
+# realistic evaluator walkthrough — 18 tasks with dependencies, comments, and assignees
+bun run seed:demo
 
-## Architecture At A Glance
+# scale benchmark — default 300, configurable up to 30,000+
+TASK_COUNT=10000 bun run seed:scale
+
+# OSS-reference-grade stress proof
+TASK_COUNT=30000 bun run seed:scale
+```
+
+Each command prints JSON with a `url`. Use:
+
+- the demo URL for collaboration, domain behavior, undo/redo, and presence
+- the scale URL for virtualized rendering, paged reads, and throughput measurement
+
+## What You Can Do
+
+- create and reopen multiple projects from the landing page
+- create, update, and delete tasks with real-time sync across tabs
+- add prerequisites with explicit `Blocked by` semantics
+- enforce dependency rules and blocked status transitions on the server
+- create, edit, and delete comments in real time
+- undo with `Ctrl+Z`, redo with `Ctrl+Shift+Z`
+- see live presence badges, cursor indicators, and an activity feed
+- edit task descriptions collaboratively with a Yjs-backed shared document
+- receive `@mentions` as durable notification projections
+- switch between detailed list view and a drag-and-drop Kanban board
+- open a 10,000+ task project that loads in paged windows and renders through a virtualized list
+
+## Architecture
 
 ```text
                                 append-only truth
@@ -62,7 +75,7 @@ The packaged stack includes:
         all connected clients converge
 ```
 
-## Sync In One Picture
+### Sync Flow
 
 ```text
 Client A                    Server                     Client B
@@ -78,18 +91,7 @@ Client A                    Server                     Client B
    |                          |              apply event, update UI
 ```
 
-## Why This Repo Exists
-
-This project is an OSS reference implementation for an event-sourced collaborative app.
-
-The point is not just “task CRUD with realtime.” The point is that:
-
-- collaboration flows through one ordered event stream
-- projections derive current state, activity, and sync behavior
-- reconnect and scale paths avoid resending full project payloads
-- undo/redo is ordinary event inversion, not a bolt-on subsystem
-
-## Why Event Sourcing Instead Of CRUD?
+### Why Event Sourcing Instead Of CRUD?
 
 | Concern | CRUD-first design | This repo |
 | --- | --- | --- |
@@ -100,95 +102,120 @@ The point is not just “task CRUD with realtime.” The point is that:
 | large projects | big payload churn | paged snapshot plus small events |
 | conflict handling | last write wins or ad hoc merges | `expectedVersion` and `409` retry |
 
+### Technology Choices
+
+| Choice | Rationale |
+| --- | --- |
+| Next.js App Router | Server Components for the landing page, API routes co-located with the frontend, single deploy target |
+| PostgreSQL | Append-only event table with `SERIALIZABLE` isolation for the write path; projections for fast reads |
+| Redis | Pub/sub event bus for SSE fanout, ephemeral presence store, rate limiter — all with in-memory fallback so the app runs without Redis |
+| Drizzle ORM | Type-safe schema, generated migrations, lightweight runtime |
+| SSE over WebSocket | Unidirectional server-to-client stream is sufficient; writes go through HTTP with optimistic concurrency |
+| Zod | Discriminated union event types shared across client and server — one schema, one source of truth |
+| Yjs | CRDT-backed collaborative text editing for task descriptions without a custom OT implementation |
+
+### How We'd Scale It Further
+
+- **Horizontal read scaling** — read replicas for snapshot and task-page queries; the write path stays on the primary
+- **Partitioned event bus** — shard Redis pub/sub by project ID so fanout cost grows with active projects, not total projects
+- **Background projection workers** — decouple projection updates from the write transaction for higher append throughput
+- **CDN edge caching** — cache snapshot responses at the edge with project-version ETags for instant cold loads
+- **Full-text search** — PostgreSQL `tsvector` index on task titles and descriptions for in-project search at scale
+
 ## Scale Proof
 
-Shipped scale features:
+### Features
 
-- paged snapshots and cursor-based task windows
-- virtualized task rendering
+- Paged snapshots and cursor-based task windows
+- Virtualized task list rendering with incremental page loading
 - Redis-backed event bus, presence store, and rate limiter with in-memory fallback
-- bounded SSE buffering for slow-consumer protection
-- load harnesses and a `10,000` task seed script checked into the repo
+- Bounded SSE buffering for slow-consumer protection
+- Seed scripts and load harnesses checked into the repo
 
-Measured locally against a production build with PostgreSQL 17 + Redis 7:
+### Measured Results
+
+Local measurements against a production build with PostgreSQL 17 + Redis 7:
 
 | Scenario | Result |
 | --- | --- |
-| `10,000` task seed | `209,839ms` |
-| append throughput | `177.5 req/s`, `56.06ms p95` |
-| paged initial load | `155.35ms p95` |
-| reconnect catch-up | `44.47ms p95` |
-| SSE fanout | `25` listeners, `115.16ms p95` |
+| 10,000 task seed | 209,839ms |
+| Append throughput | 177.5 req/s, 56.06ms p95 |
+| Paged initial load | 155.35ms p95 |
+| Reconnect catch-up | 44.47ms p95 |
+| SSE fanout (25 listeners) | 115.16ms p95 |
 
-See [docs/scaling.md](./docs/scaling.md) and [load/README.md](./load/README.md).
+### Run It Yourself
+
+```bash
+# seed a 10,000 task project
+TASK_COUNT=10000 bun run seed:scale
+
+# measure append throughput
+bun load/append-events.ts
+
+# measure paged task loading
+TASK_COUNT=10000 bun load/task-page.ts
+```
+
+See [load/README.md](./load/README.md) for details and env overrides.
+
+## API Surface
+
+Machine-readable: [docs/openapi.yaml](./docs/openapi.yaml)
+
+| Route | Purpose |
+| --- | --- |
+| `POST /api/projects` | Create a project |
+| `GET /api/projects/{id}/snapshot` | Paged project snapshot |
+| `GET /api/projects/{id}/tasks` | Cursor-paginated task window |
+| `POST /api/projects/{id}/events` | Append an event |
+| `GET /api/projects/{id}/events` | Event history |
+| `GET /api/projects/{id}/stream` | SSE event stream |
+
+Full reference: [docs/api.md](./docs/api.md)
+
+## Local Verification
+
+```bash
+bun run typecheck
+bun run test        # unit + integration (bootstraps PostgreSQL + Redis automatically)
+bun run test:e2e    # Playwright two-tab sync (bootstraps everything + installs Chromium)
+```
 
 ## Further Reading
 
 - [docs/architecture.md](./docs/architecture.md) — write path, projection model, reconnect, failure handling
 - [docs/scaling.md](./docs/scaling.md) — read-path strategy, task windowing, virtualization, measured results
 - [docs/api.md](./docs/api.md) — route reference and OpenAPI contract
-- [docs/demo/README.md](./docs/demo/README.md) — demo walkthrough
+- [docs/demo/README.md](./docs/demo/README.md) — demo walkthrough and video script
 - [docs/operations.md](./docs/operations.md) — health checks and runtime config
-
-## API Surface
-
-Machine-readable API contract:
-
-- [docs/openapi.yaml](./docs/openapi.yaml)
-
-Human-facing summary:
-
-- [docs/api.md](./docs/api.md)
-
-Routes covered:
-
-- `POST /api/projects`
-- `GET /api/projects/{projectId}/snapshot`
-- `GET|POST /api/projects/{projectId}/events`
-- `GET /api/projects/{projectId}/tasks`
-- `GET /api/projects/{projectId}/stream`
-- `GET /api/health`
-
-## Local Verification
-
-`bun run test` and `bun run test:e2e` bring up PostgreSQL and Redis through Docker automatically before running migrations and tests.
-
-```bash
-bun run typecheck
-bun run test
-bun run test:e2e
-```
-
-The first `bun run test:e2e` may download Chromium through Playwright and, on Linux, install the required browser system dependencies.
-
-Scale helpers:
-
-```bash
-bun run load:seed
-# see load/README.md for k6 and SSE fanout probes
-```
-
-## OSS Docs
-
-- [CONTRIBUTING.md](./CONTRIBUTING.md)
-- [CHANGELOG.md](./CHANGELOG.md)
-- [SECURITY.md](./SECURITY.md)
-- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
 
 ## Project Structure
 
 ```text
 app/
-  api/
+  api/                  # Next.js API routes (events, snapshot, stream, tasks)
+  page.tsx              # Landing page (project catalog)
+  projects/[id]/        # Project workspace page
 docs/
+  architecture.md       # Write path, projections, reconnect
+  scaling.md            # Large-project strategy and measured results
+  api.md                # Route reference
+  openapi.yaml          # OpenAPI 3.1 contract
+  demo/                 # Video script, runbook, slides
 load/
+  append-events.ts      # Append throughput probe
+  task-page.ts          # Paged load probe
 scripts/
+  seed-demo-project.ts  # Realistic 18-task walkthrough seed
+  seed-scale-project.ts # Configurable scale seed (10K+ tasks)
+  dev-stack.ts          # Docker lifecycle for local dev
 src/
-  client/
-  server/
-  shared/
+  client/               # React components, sync hooks, API client
+  server/               # Event store, projections, presence, rate limiter
+  shared/               # Types and Zod schemas shared across client and server
 test/
-  e2e/
-  integration/
-  unit/
+  e2e/                  # Playwright two-tab sync
+  integration/          # API route and SSE stream tests
+  unit/                 # Reducer, presence, history, types
 ```

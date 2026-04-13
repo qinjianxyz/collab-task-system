@@ -29,10 +29,18 @@ Use `3000` in that command if you are recording on the default port.
 In another terminal:
 
 ```bash
-bun scripts/seed-large-project.ts
+TASK_COUNT=10000 bun run seed:scale
 ```
 
-Save the returned `projectId`. You will need it for the scale segment.
+Save the returned `projectId` and `url`. You will need them for the scale segment.
+
+In a third terminal, seed the realistic demo project:
+
+```bash
+bun run seed:demo
+```
+
+Save that URL too — use it for the collaboration walkthrough.
 
 ## 3. Open Browser Contexts
 

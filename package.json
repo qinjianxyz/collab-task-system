@@ -43,8 +43,10 @@
     "db:reset": "bun run db:down && bun run db:up && bun run db:migrate",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun src/server/db/migrate.ts",
-    "load:seed": "bun scripts/seed-large-project.ts",
-    "load:fanout": "node load/realtime-fanout.js"
+    "seed:demo": "bun scripts/seed-demo-project.ts",
+    "seed:scale": "bun scripts/seed-scale-project.ts",
+    "load:append": "bun load/append-events.ts",
+    "load:task-page": "bun load/task-page.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

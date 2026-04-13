@@ -19,10 +19,16 @@ APP_PORT=8100 docker compose up --build
 Seed a large project in a second terminal:
 
 ```bash
-bun scripts/seed-large-project.ts
+TASK_COUNT=10000 bun run seed:scale
 ```
 
 Keep the returned `projectId` for the scale segment.
+
+Also seed the realistic demo project:
+
+```bash
+bun run seed:demo
+```
 
 Open:
 
