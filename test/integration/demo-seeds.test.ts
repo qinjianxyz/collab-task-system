@@ -50,7 +50,7 @@ describe("demo seed builders", () => {
     expect(taskResult.rows.some((task) => (task.dependencies ?? []).length > 0)).toBe(true);
     expect(commentResult.rows[0]?.count).not.toBe("0");
     expect(seeded.url).toContain(`/projects/${seeded.projectId}`);
-  }, 20_000);
+  });
 
   it("creates a large benchmark project with stable ordering and the requested size", async () => {
     const taskCount = 120;
@@ -82,5 +82,5 @@ describe("demo seed builders", () => {
     expect(edgeResult.rows[0]?.max_position).toBe(taskCount);
     expect(edgeResult.rows[0]?.first_title).toBe("Demo Task 00001");
     expect(edgeResult.rows[0]?.last_title).toBe("Demo Task 00120");
-  }, 45_000);
+  });
 });

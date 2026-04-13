@@ -4,7 +4,6 @@ import type { Task } from "../../src/shared/types";
 import {
   buildDependencyCandidates,
   buildSelectedDependencyChips,
-  formatTaskStatusLabel,
 } from "../../src/client/components/workspace-dependencies";
 
 function createTask(
@@ -73,10 +72,5 @@ describe("workspace dependency helpers", () => {
         status: "todo",
       },
     ]);
-  });
-
-  it("formats task status labels for human-readable UI copy", () => {
-    expect(formatTaskStatusLabel("in_progress")).toBe("In Progress");
-    expect(formatTaskStatusLabel("todo")).toBe("Todo");
   });
 });

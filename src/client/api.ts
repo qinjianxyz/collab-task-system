@@ -5,26 +5,12 @@ import {
   createProjectRequestSchema,
   createProjectResponseSchema,
   projectEventsResponseSchema,
-  projectNotificationsResponseSchema,
   projectSnapshotResponseSchema,
-  projectTaskPageResponseSchema,
-  presenceUpdateRequestSchema,
-  presenceUpdateResponseSchema,
   type AppendProjectEventRequest,
   type CreateProjectRequest,
   type CreateProjectResponse,
   type ProjectEventsResponse,
-  type ProjectNotificationsResponse,
   type ProjectSnapshotResponse,
-  type ProjectTaskPageResponse,
-  type PresenceUpdateRequest,
-  type PresenceUpdateResponse,
-  taskDescriptionStateResponseSchema,
-  taskDescriptionSyncRequestSchema,
-  taskDescriptionSyncResponseSchema,
-  type TaskDescriptionStateResponse,
-  type TaskDescriptionSyncRequest,
-  type TaskDescriptionSyncResponse,
 } from "../shared/api";
 import type { AppendEventInput } from "../shared/types";
 
@@ -95,97 +81,6 @@ export async function fetchProjectEvents(
   });
 
   return parseResponse(response, projectEventsResponseSchema);
-}
-
-export async function fetchProjectTaskPage(
-  projectId: string,
-  {
-    after,
-    limit,
-  }: {
-    after?: string | null;
-    limit?: number;
-  } = {},
-): Promise<ProjectTaskPageResponse> {
-  const searchParams = new URLSearchParams();
-  if (after) {
-    searchParams.set("after", after);
-  }
-  if (typeof limit === "number") {
-    searchParams.set("limit", String(limit));
-  }
-
-  const query = searchParams.toString();
-  const response = await fetch(
-    `/api/projects/${projectId}/tasks${query ? `?${query}` : ""}`,
-    {
-      cache: "no-store",
-    },
-  );
-
-  return parseResponse(response, projectTaskPageResponseSchema);
-}
-
-export async function fetchProjectNotifications(
-  projectId: string,
-  userId: string,
-): Promise<ProjectNotificationsResponse> {
-  const response = await fetch(
-    `/api/projects/${projectId}/notifications?userId=${encodeURIComponent(userId)}`,
-    {
-      cache: "no-store",
-    },
-  );
-
-  return parseResponse(response, projectNotificationsResponseSchema);
-}
-
-export async function updateProjectPresence(
-  projectId: string,
-  input: PresenceUpdateRequest,
-): Promise<PresenceUpdateResponse> {
-  const response = await fetch(`/api/projects/${projectId}/presence`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(presenceUpdateRequestSchema.parse(input)),
-  });
-
-  return parseResponse(response, presenceUpdateResponseSchema);
-}
-
-export async function fetchTaskDescriptionState(
-  projectId: string,
-  taskId: string,
-): Promise<TaskDescriptionStateResponse> {
-  const response = await fetch(
-    `/api/projects/${projectId}/tasks/${taskId}/description`,
-    {
-      cache: "no-store",
-    },
-  );
-
-  return parseResponse(response, taskDescriptionStateResponseSchema);
-}
-
-export async function syncTaskDescriptionUpdate(
-  projectId: string,
-  taskId: string,
-  input: TaskDescriptionSyncRequest,
-): Promise<TaskDescriptionSyncResponse> {
-  const response = await fetch(
-    `/api/projects/${projectId}/tasks/${taskId}/description`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(taskDescriptionSyncRequestSchema.parse(input)),
-    },
-  );
-
-  return parseResponse(response, taskDescriptionSyncResponseSchema);
 }
 
 export async function appendProjectEvent(

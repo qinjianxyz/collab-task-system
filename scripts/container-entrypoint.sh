@@ -5,8 +5,7 @@ max_attempts="${DB_MIGRATION_MAX_ATTEMPTS:-20}"
 attempt=1
 
 while [ "$attempt" -le "$max_attempts" ]; do
-  if bun src/server/db/migrate.ts 2>&1; then
-    echo "Migrations applied. Starting Next.js..."
+  if bun run db:migrate; then
     exec node node_modules/next/dist/bin/next start --hostname 0.0.0.0 --port 3000
   fi
 

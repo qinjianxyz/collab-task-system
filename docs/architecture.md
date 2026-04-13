@@ -2,49 +2,54 @@
 
 ## Core Thesis
 
-Collab Task System treats collaboration as an ordered event stream, not as mutable rows with realtime bolted on afterward.
+This project treats collaboration as an ordered event stream, not a set of mutable rows.
 
-That gives one durable source of truth for:
+That single decision simplifies the rest of the system:
 
-- project state
-- realtime sync
-- undo/redo
-- activity
-- notifications
-- future audit and derived projections
+- writes become explicit append commands
+- read models become projections
+- sync becomes versioned event replay
+- activity becomes another projection
+- undo becomes inversion of prior events
 
 ## System Shape
 
 ```text
-Browser
-  | optimistic local apply
-  | POST append command
+Client
+  |
+  | 1. optimistic local apply
+  | 2. POST append command
   v
 Next.js route handler
-  | parse + validate
-  | expectedVersion check
+  |
+  | parse + validate + check expectedVersion
   v
-append-only events table
-  + projection tables
+append-only event log
+  +
+projection tables
+  |
   | same SQL transaction
   v
 committed project version
+  |
   | publish committed event
   v
 SSE stream
+  |
   v
-connected clients
+all connected clients
 ```
 
 ## Durable Write Path
 
 ```text
 append command
-  -> reject malformed input
-  -> reject stale expectedVersion
-  -> validate dependency graph and status transition rules
+  -> parse with shared Zod schema
+  -> reject ephemeral presence writes
+  -> lock project version
+  -> validate dependency and transition rules
   -> insert event
-  -> apply projection update
+  -> apply projection updates
   -> bump project current_version
   -> commit
   -> broadcast committed event
@@ -52,13 +57,13 @@ append command
 
 Key invariant:
 
-`an event is not durable unless the projection update succeeds in the same transaction`
+`the event is not durable unless the projection update succeeds`
 
-That keeps the log and read model aligned without an asynchronous repair loop in the primary path.
+That keeps the event log and the read model in sync without background repair jobs in the main path.
 
 ## Event Model
 
-The shared discriminated union makes every mutation explicit:
+Every mutation is explicit in the shared discriminated union:
 
 - `project.create`
 - `project.update`
@@ -68,193 +73,108 @@ The shared discriminated union makes every mutation explicit:
 - `comment.create`
 - `comment.update`
 - `comment.delete`
-- `presence.update` for ephemeral viewers
+- `presence.update` for ephemeral collaboration state
 
-Durable events are stored in Postgres. Presence is intentionally ephemeral and kept out of the durable event log.
-
-Collaborative descriptions are intentionally split:
-
-- live shared editing flows through a task-scoped Yjs document
-- durable checkpoints still land in the event log via `task.update`
-
-That keeps the system honest: the user gets multiplayer text editing, but the long-term record still lives in the same task model as every other durable mutation.
+The server stores durable events in Postgres and rejects ephemeral presence writes from the event log.
 
 ## Read Model
 
-Postgres stores:
+Postgres stores four primary tables:
 
 - `projects`
 - `tasks`
 - `comments`
-- `notifications`
 - `events`
 
-`events` is the source of truth. The projection tables exist for:
+`events` is the source of truth. The other tables are projection tables optimized for:
 
-- current snapshot reads
+- snapshot reads
 - dependency validation
-- paged task windows
-- comment lookup without replaying the entire event stream
-- durable mention notifications without replaying comment history
+- UI rendering
+- comment lookup
 
 ## Sync Model
 
 ```text
-initial render
-  -> server renders first task window
+initial load
+  -> fetch snapshot
 
-live collaboration
+steady state
   -> open SSE stream
-  -> apply committed events
+  -> apply committed events as they arrive
 
-local write
+write
   -> optimistic local apply
   -> POST append command
-  -> reconcile against committed event
+  -> reconcile against committed server version
 
 conflict
-  -> refresh from server
-  -> retry once with latest version
+  -> refresh snapshot
+  -> retry once with latest expectedVersion
 ```
 
-This keeps the transport simple:
-
-- HTTP POST for writes
-- SSE for fan-out
-- ordered versions for reconciliation
-- bounded SSE buffers with reconnect-based catch-up for slow consumers
+This is enough for the take-home because the client only needs server-to-client fan-out after writes commit.
 
 ## Dependency Semantics
 
-Dependencies live in `task.dependencies[]`.
+Dependencies are represented as `task.dependencies[]`.
 
-The UX language is intentionally explicit:
+The product language is:
 
-- composer: `Blocked by`
-- task card: `Blocked by:`
+- `Blocked by` in the task composer
+- `Blocked by:` on task cards
 
-The server enforces:
+The server enforces two rules:
 
-1. no dependency cycles
-2. no move to `in_progress` while a prerequisite is unfinished
-3. no delete of a task that another task still depends on
+1. dependency edges must remain acyclic
+2. a task cannot move into `in_progress` while a prerequisite task is not `done`
 
-That means the UI can stay optimistic without being the final source of domain truth.
+That means the UI can be optimistic, while the server still remains the final authority for consistency.
 
-## Comments
+## Presence And Activity
 
-Comments are events too:
+These are intentionally lightweight:
 
-- create
-- edit
-- delete
+- presence is ephemeral and broadcast over SSE
+- activity is formatted from the same stream of committed events
 
-The server now rejects comment updates and deletes when the target comment does not exist, so the client cannot drift into successful no-op edits.
+Neither feature introduces a second source of truth.
 
 ## Undo And Redo
 
 Undo and redo are client-driven event inversion:
 
-- create -> delete
-- update -> inverse update with prior values
-- delete -> recreate with prior values
+- undo a create with a delete
+- undo an update with the prior field values
+- redo by appending the forward action again
 
-The server does not have a special undo subsystem. It only validates and commits normal events.
-
-## Read-Path Scale Shape
-
-The scale path is intentionally separate from the write model:
-
-```text
-server render
-  -> first task page only
-
-scroll near end
-  -> fetch next task page by cursor
-
-render
-  -> virtualize the loaded task window
-```
-
-This improves the cost of large projects without compromising the event-sourced architecture.
-
-## Collaboration Layers
-
-```text
-durable collaboration
-  -> events table
-  -> tasks/comments/notifications projections
-
-ephemeral collaboration
-  -> presence store
-  -> live cursor payloads
-  -> task-scoped Yjs document streams
-```
-
-This split is deliberate:
-
-- Postgres answers "what is the durable project history?"
-- SSE answers "what just committed and who is active right now?"
-- task-doc channels answer "what is the current shared description buffer?"
-
-The SSE layer is intentionally defensive:
-
-- streams emit heartbeats every 15 seconds
-- buffered SSE writes are bounded
-- if a consumer falls behind, the stream closes and the client reconnects from the last committed version
-
-## Mention Notifications
-
-Comment mentions are parsed during projection updates and written into the `notifications` table.
-
-That means notifications:
-
-- survive reloads
-- are queryable without replaying the full stream
-- remain derived from the same comment events as the rest of the system
-
-There is no separate notification write path.
-
-## Board View
-
-Kanban is an alternate projection over the same task model:
-
-- columns are `TaskStatus`
-- card order is `position`
-- drag-and-drop emits a normal `task.update` with the new `status` and `position`
-
-The board does not create a second ordering model. It reuses the same fields the list view already understands.
+The server stays simple because it only needs to validate and commit normal events.
 
 ## Why This Beats CRUD For This Problem
 
-The rubric asks for:
+The take-home asks for:
 
 - cross-client consistency
-- near real-time updates
-- future-proof behavior for large project payloads
-- no managed realtime backend
+- realtime updates
+- future-proof handling of larger project payloads
+- no managed realtime database
 
-Event sourcing fits that better than CRUD because the system ships small, ordered changes and paged reads instead of repeatedly serializing a giant mutable document.
+Event sourcing matches that better than CRUD because the system can transmit and reason about small, ordered changes instead of repeatedly serializing the whole project.
 
-## Boundaries
+## Honest Boundaries
 
-Shipped here:
+This worktree currently proves:
 
-- transactional append + projection writes
-- optimistic concurrency
-- SSE-based collaboration
-- live cursor badges
-- collaborative description editing
-- mention notifications
-- Kanban drag-and-drop
-- task/comment lifecycle UI
-- presence and activity
-- cursor-based task paging
-- virtualized benchmark rendering
+- transactional event writes
+- ordered SSE sync
+- optimistic conflict recovery
+- collaboration projections
+- realistic demo data
 
-Still next:
+It does not yet prove:
 
-- real auth
+- distributed fan-out across many app instances
 - offline replay
-- Redis-backed fan-out across multiple app instances
-- multi-node performance validation
+- virtualized rendering or cursor pagination
+
+Those are natural extensions of the same architecture, but they are intentionally not overstated here.

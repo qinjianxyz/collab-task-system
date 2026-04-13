@@ -55,32 +55,11 @@ export const commentSchema = z.object({
   entityVersion: z.number().int().positive().optional(),
 });
 
-export const presenceCursorSchema = z.object({
-  kind: z.enum(["task", "comment", "description", "board"]),
-  taskId: z.string().min(1),
-  taskTitle: z.string().min(1),
-  label: z.string().min(1),
-});
-
 export const presenceViewerSchema = z.object({
   clientId: z.string().min(1),
   userId: z.string().min(1),
   location: z.string().min(1),
   connectedAt: z.number().int().nonnegative(),
-  cursor: presenceCursorSchema.optional(),
-});
-
-export const mentionNotificationSchema = z.object({
-  id: z.string().min(1),
-  projectId: z.string().min(1),
-  taskId: z.string().min(1),
-  taskTitle: z.string().min(1),
-  commentId: z.string().min(1),
-  userId: z.string().min(1),
-  actorUserId: z.string().min(1),
-  contentPreview: z.string().min(1),
-  createdAt: z.number().int().nonnegative(),
-  updatedAt: z.number().int().nonnegative(),
 });
 
 const projectCreateActionSchema = z.object({
@@ -165,7 +144,7 @@ const presenceUpdateActionSchema = z.object({
   data: z.object({
     userId: z.string().min(1),
     location: z.string().min(1),
-    cursor: presenceCursorSchema.optional(),
+    cursor: z.unknown().optional(),
   }),
 });
 
@@ -215,9 +194,7 @@ export type TaskConfig = z.infer<typeof taskConfigSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type Task = z.infer<typeof taskSchema>;
 export type Comment = z.infer<typeof commentSchema>;
-export type PresenceCursor = z.infer<typeof presenceCursorSchema>;
 export type PresenceViewer = z.infer<typeof presenceViewerSchema>;
-export type MentionNotification = z.infer<typeof mentionNotificationSchema>;
 export type EventAction = z.infer<typeof eventActionSchema>;
 export type ProjectEvent = z.infer<typeof projectEventSchema>;
 export type AppendEventInput = z.infer<typeof appendEventInputSchema>;

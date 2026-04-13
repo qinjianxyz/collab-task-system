@@ -1,23 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 
-import type { ProjectTaskPageResponse } from "../../shared/api";
-import type { Comment, ProjectSnapshot, Task, TaskStatus } from "../../shared/types";
-import { createPresenceCursor } from "../cursors";
-import { useProjectSync } from "../hooks/useProjectSync";
+import type { Comment, Task, TaskStatus } from "../../shared/types";
 import { getOrCreateClientId, getStoredDisplayName, setStoredDisplayName } from "../identity";
-import { getReorderedPosition } from "../kanban/position";
-import { WorkspaceActivityFeed } from "./workspace-activity-feed";
-import { WorkspaceAlert } from "./workspace-alert";
-import { WorkspaceHeader } from "./workspace-header";
-import { KanbanBoard } from "./kanban-board";
-import { buildSelectedDependencyChips, buildDependencyCandidates } from "./workspace-dependencies";
-import { WorkspaceNotifications } from "./workspace-notifications";
-import { buildWorkspaceStatusViewModel } from "./workspace-status";
-import { WorkspaceShortcuts } from "./workspace-shortcuts";
-import { WorkspaceTaskComposer } from "./workspace-task-composer";
-import { WorkspaceTaskList } from "./workspace-task-list";
+import { useProjectSync } from "../hooks/useProjectSync";
+import {
+  buildDependencyCandidates,
+  buildSelectedDependencyChips,
+  formatTaskStatusLabel,
+} from "./workspace-dependencies";
+import { buildTaskCardViewModel } from "./workspace-task-card";
 
 const STATUS_OPTIONS: TaskStatus[] = [
   "todo",
@@ -47,27 +40,18 @@ function groupCommentsByTask(
 }
 
 type ProjectWorkspaceProps = {
-  initialSnapshot?: ProjectSnapshot;
-  initialTaskPage?: ProjectTaskPageResponse["page"];
   projectId: string;
 };
 
-export function ProjectWorkspace({
-  initialSnapshot,
-  initialTaskPage,
-  projectId,
-}: ProjectWorkspaceProps) {
+export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
   const [clientId, setClientId] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [viewMode, setViewMode] = useState<"list" | "board">("list");
   const [taskTitle, setTaskTitle] = useState("");
   const [taskStatus, setTaskStatus] = useState<TaskStatus>("todo");
   const [taskDependencies, setTaskDependencies] = useState<string[]>([]);
   const [dependencySearchQuery, setDependencySearchQuery] = useState("");
   const [showCompletedDependencies, setShowCompletedDependencies] = useState(false);
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
-  const [commentEdits, setCommentEdits] = useState<Record<string, string>>({});
-  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const taskInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -77,15 +61,10 @@ export function ProjectWorkspace({
   }, []);
 
   const normalizedDisplayName = displayName.trim();
-  const sync = useProjectSync(
-    projectId,
-    {
-      clientId,
-      userId: normalizedDisplayName || "anonymous",
-    },
-    initialSnapshot,
-    initialTaskPage,
-  );
+  const sync = useProjectSync(projectId, {
+    clientId,
+    userId: normalizedDisplayName || "anonymous",
+  });
 
   const snapshot = sync.snapshot;
   const commentsByTask = snapshot ? groupCommentsByTask(snapshot.comments) : new Map();
@@ -101,19 +80,6 @@ export function ProjectWorkspace({
     snapshot?.tasks ?? [],
     taskDependencies,
   );
-  const taskInventoryCopy = snapshot
-    ? sync.totalTaskCount > snapshot.tasks.length
-      ? `Showing ${snapshot.tasks.length} of ${sync.totalTaskCount} tasks · version ${snapshot.version}`
-      : `${snapshot.tasks.length} tasks · version ${snapshot.version}`
-    : "Fetching snapshot and stream...";
-  const shouldVirtualizeTaskList = Boolean(
-    snapshot && (sync.hasMoreTasks || sync.totalTaskCount > 40),
-  );
-  const statusViewModel = buildWorkspaceStatusViewModel({
-    connectionStatus: sync.connectionStatus,
-    error: sync.error,
-    isMutating: sync.isMutating,
-  });
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -167,24 +133,9 @@ export function ProjectWorkspace({
     };
   }, [sync.redo, sync.undo]);
 
-  function clearCommentEdit(commentId: string): void {
-    setEditingCommentId((current) => (current === commentId ? null : current));
-    setCommentEdits((current) => {
-      const next = { ...current };
-      delete next[commentId];
-      return next;
-    });
-  }
+  async function handleTaskSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
 
-  function startCommentEdit(comment: Comment): void {
-    setEditingCommentId(comment.id);
-    setCommentEdits((current) => ({
-      ...current,
-      [comment.id]: comment.content,
-    }));
-  }
-
-  async function handleTaskSubmit(): Promise<void> {
     const normalizedTitle = taskTitle.trim();
     if (!normalizedTitle) {
       return;
@@ -229,20 +180,6 @@ export function ProjectWorkspace({
     }
   }
 
-  async function handleTaskDelete(task: Task): Promise<void> {
-    try {
-      await sync.dispatch({
-        entityId: task.id,
-        action: {
-          type: "task.delete",
-          data: {},
-        },
-      });
-    } catch {
-      // error is surfaced by the hook state
-    }
-  }
-
   async function handleCommentSubmit(taskId: string): Promise<void> {
     const content = commentDrafts[taskId]?.trim();
     if (!content || !normalizedDisplayName) {
@@ -271,288 +208,390 @@ export function ProjectWorkspace({
     }
   }
 
-  async function handleCommentUpdate(comment: Comment): Promise<void> {
-    const content = commentEdits[comment.id]?.trim();
-    if (!content) {
-      return;
-    }
-
-    try {
-      await sync.dispatch({
-        entityId: comment.id,
-        action: {
-          type: "comment.update",
-          data: {
-            content,
-          },
-        },
-      });
-
-      clearCommentEdit(comment.id);
-    } catch {
-      // error is surfaced by the hook state
-    }
-  }
-
-  async function handleCommentDelete(comment: Comment): Promise<void> {
-    try {
-      await sync.dispatch({
-        entityId: comment.id,
-        action: {
-          type: "comment.delete",
-          data: {},
-        },
-      });
-
-      clearCommentEdit(comment.id);
-    } catch {
-      // error is surfaced by the hook state
-    }
-  }
-
-  async function handleTaskDescriptionPersist(task: Task, value: string): Promise<void> {
-    const normalizedValue = value.trim();
-    const currentDescription = task.configuration.description?.trim() ?? "";
-
-    if (normalizedValue === currentDescription) {
-      return;
-    }
-
-    try {
-      await sync.dispatch({
-        entityId: task.id,
-        action: {
-          type: "task.update",
-          data: {
-            configuration: {
-              ...task.configuration,
-              description: normalizedValue,
-            },
-          },
-        },
-      });
-    } catch {
-      // error is surfaced by the hook state
-    }
-  }
-
-  async function handleKanbanMove(
-    task: Task,
-    targetStatus: TaskStatus,
-    beforeTaskId?: string,
-  ): Promise<void> {
-    const siblingTasks = (snapshot?.tasks ?? [])
-      .filter((candidate) => candidate.status === targetStatus && candidate.id !== task.id)
-      .sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
-
-    const insertionIndex = beforeTaskId
-      ? siblingTasks.findIndex((candidate) => candidate.id === beforeTaskId)
-      : siblingTasks.length;
-    const normalizedIndex = insertionIndex >= 0 ? insertionIndex : siblingTasks.length;
-    const previousPosition =
-      normalizedIndex > 0 ? siblingTasks[normalizedIndex - 1]?.position : undefined;
-    const nextPosition =
-      beforeTaskId && normalizedIndex < siblingTasks.length
-        ? siblingTasks[normalizedIndex]?.position
-        : undefined;
-
-    try {
-      await sync.dispatch({
-        entityId: task.id,
-        action: {
-          type: "task.update",
-          data: {
-            status: targetStatus,
-            position: getReorderedPosition(previousPosition, nextPosition),
-          },
-        },
-      });
-    } catch {
-      // error is surfaced by the hook state
-    }
-  }
-
   return (
     <main className="workspace-shell">
-      <WorkspaceHeader
-        canRedo={sync.canRedo}
-        canUndo={sync.canUndo}
-        displayName={displayName}
-        onDisplayNameBlur={() => setStoredDisplayName(normalizedDisplayName)}
-        onDisplayNameChange={setDisplayName}
-        onRedo={() => {
-          void sync.redo();
-        }}
-        onRefresh={() => {
-          void sync.refresh();
-        }}
-        onUndo={() => {
-          void sync.undo();
-        }}
-        project={snapshot?.project ?? null}
-        status={statusViewModel}
-        taskInventoryCopy={taskInventoryCopy}
-        viewers={sync.viewers}
-      />
+      <header className="workspace-header">
+        <div className="header-stack">
+          <p className="eyebrow">Project</p>
+          <h1>{snapshot?.project.name ?? "Loading project..."}</h1>
+          <p className="subtle-copy">
+            {snapshot
+              ? `${snapshot.tasks.length} tasks · version ${snapshot.version}`
+              : "Fetching snapshot and stream..."}
+          </p>
+          {snapshot?.project.description ? (
+            <p className="project-description">{snapshot.project.description}</p>
+          ) : null}
 
-      <WorkspaceAlert
-        message={sync.error}
-        onRetry={sync.connectionStatus !== "connected"
-          ? () => {
-              void sync.refresh();
-            }
-          : undefined}
-      />
+          <div className="presence-summary">
+            <span className="subtle-copy">Viewing now</span>
+            <div className="viewer-list">
+              {sync.viewers.length > 0 ? (
+                sync.viewers.map((viewer) => (
+                  <span className="viewer-chip" key={viewer.clientId}>
+                    {viewer.userId}
+                  </span>
+                ))
+              ) : (
+                <span className="subtle-copy">Waiting for viewers...</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="header-controls">
+          <label className="field compact-field">
+            <span>Display name</span>
+            <input
+              className="text-input"
+              onBlur={() => setStoredDisplayName(normalizedDisplayName)}
+              onChange={(event) => setDisplayName(event.target.value)}
+              placeholder="alice"
+              value={displayName}
+            />
+          </label>
+
+          <div className={`status-pill status-${sync.connectionStatus}`}>
+            {sync.connectionStatus}
+          </div>
+
+          <div className="history-controls">
+            <button
+              className="secondary-button"
+              disabled={!sync.canUndo}
+              onClick={() => {
+                void sync.undo();
+              }}
+              type="button"
+            >
+              Undo
+            </button>
+
+            <button
+              className="secondary-button"
+              disabled={!sync.canRedo}
+              onClick={() => {
+                void sync.redo();
+              }}
+              type="button"
+            >
+              Redo
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {sync.error ? <p className="error-banner">{sync.error}</p> : null}
 
       <div className="workspace-body">
         <div className="workspace-main">
-          <WorkspaceTaskComposer
-            canMutate={canMutate}
-            dependencyCandidates={dependencyCandidates}
-            dependencySearchQuery={dependencySearchQuery}
-            onDependencyRemove={(taskId) =>
-              setTaskDependencies((current) =>
-                current.filter((dependencyId) => dependencyId !== taskId),
-              )}
-            onDependencySearchChange={setDependencySearchQuery}
-            onDependencyToggle={(taskId, checked) =>
-              setTaskDependencies((current) =>
-                checked
-                  ? [...current, taskId]
-                  : current.filter((dependencyId) => dependencyId !== taskId),
-              )}
-            onShowCompletedDependenciesChange={setShowCompletedDependencies}
-            onSubmit={() => {
-              void handleTaskSubmit();
-            }}
-            onTaskStatusChange={setTaskStatus}
-            onTaskTitleChange={setTaskTitle}
-            selectedDependencyChips={selectedDependencyChips}
-            showCompletedDependencies={showCompletedDependencies}
-            statusOptions={STATUS_OPTIONS}
-            taskDependencies={taskDependencies}
-            taskInputRef={taskInputRef}
-            taskStatus={taskStatus}
-            taskTitle={taskTitle}
-          />
+          <section className="panel">
+            <form className="task-form" onSubmit={handleTaskSubmit}>
+              <label className="field grow-field">
+                <span>Add task</span>
+                <input
+                  aria-label="Add task"
+                  className="text-input"
+                  disabled={!snapshot}
+                  ref={taskInputRef}
+                  onChange={(event) => setTaskTitle(event.target.value)}
+                  placeholder="Ship the two-tab demo"
+                  value={taskTitle}
+                />
+              </label>
+
+              <label className="field">
+                <span>Status</span>
+                <select
+                  className="text-input"
+                  onChange={(event) => setTaskStatus(event.target.value as TaskStatus)}
+                  value={taskStatus}
+                >
+                  {STATUS_OPTIONS.map((status) => (
+                    <option key={status} value={status}>
+                      {status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <button className="primary-button" disabled={!canMutate} type="submit">
+                {sync.isMutating ? "Syncing..." : "Add task"}
+              </button>
+            </form>
+
+            {snapshot?.tasks.length ? (
+              <div className="dependency-selector">
+                <div className="dependency-header">
+                  <div className="dependency-heading">
+                    <span className="field-label">Blocked by</span>
+                    <p className="dependency-helper">
+                      This new task stays blocked until these prerequisite tasks are done.
+                    </p>
+                  </div>
+
+                  <label className="dependency-toggle">
+                    <input
+                      checked={showCompletedDependencies}
+                      onChange={(event) => setShowCompletedDependencies(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Show completed tasks</span>
+                  </label>
+                </div>
+
+                <div className="dependency-selected">
+                  {selectedDependencyChips.length > 0 ? (
+                    selectedDependencyChips.map((task) => (
+                      <button
+                        className="dependency-chip"
+                        key={task.id}
+                        onClick={() =>
+                          setTaskDependencies((current) =>
+                            current.filter((dependencyId) => dependencyId !== task.id),
+                          )
+                        }
+                        type="button"
+                      >
+                        <span>{task.title}</span>
+                        <strong>{formatTaskStatusLabel(task.status)}</strong>
+                      </button>
+                    ))
+                  ) : (
+                    <p className="subtle-copy">No prerequisites selected.</p>
+                  )}
+                </div>
+
+                <label className="field">
+                  <span>Search prerequisite tasks</span>
+                  <input
+                    className="text-input"
+                    onChange={(event) => setDependencySearchQuery(event.target.value)}
+                    placeholder="Filter tasks by title"
+                    value={dependencySearchQuery}
+                  />
+                </label>
+
+                <p className="subtle-copy">
+                  {dependencyCandidates.length} prerequisite candidate
+                  {dependencyCandidates.length === 1 ? "" : "s"}.
+                </p>
+
+                <div className="dependency-options">
+                  {dependencyCandidates.length > 0 ? (
+                    dependencyCandidates.map((task) => {
+                      const isSelected = taskDependencies.includes(task.id);
+
+                      return (
+                        <label
+                          className={`dependency-option${isSelected ? " dependency-option-selected" : ""}`}
+                          key={task.id}
+                        >
+                          <input
+                            aria-label={`Blocked by ${task.title}`}
+                            checked={isSelected}
+                            onChange={(event) =>
+                              setTaskDependencies((current) =>
+                                event.target.checked
+                                  ? [...current, task.id]
+                                  : current.filter((dependencyId) => dependencyId !== task.id),
+                              )
+                            }
+                            type="checkbox"
+                          />
+
+                          <div className="dependency-option-copy">
+                            <span className="dependency-option-title">{task.title}</span>
+                            <span className={`task-status-badge task-status-${task.status}`}>
+                              {formatTaskStatusLabel(task.status)}
+                            </span>
+                          </div>
+                        </label>
+                      );
+                    })
+                  ) : (
+                    <p className="subtle-copy">No matching prerequisite tasks.</p>
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </section>
 
           <section className="task-grid">
             {!snapshot ? (
               <div className="panel">
                 <p className="subtle-copy">Waiting for the initial snapshot.</p>
               </div>
+            ) : snapshot.tasks.length === 0 ? (
+              <div className="panel">
+                <p className="subtle-copy">
+                  No tasks yet. Add one above, then open the same page in another tab to
+                  watch it appear over the event stream.
+                </p>
+              </div>
             ) : (
-              <>
-                <div className="view-toggle">
-                  <button
-                    className={`secondary-button${viewMode === "list" ? " view-toggle-active" : ""}`}
-                    onClick={() => setViewMode("list")}
-                    type="button"
-                  >
-                    List view
-                  </button>
-                  <button
-                    className={`secondary-button${viewMode === "board" ? " view-toggle-active" : ""}`}
-                    onClick={() => setViewMode("board")}
-                    type="button"
-                  >
-                    Board view
-                  </button>
-                </div>
+              snapshot.tasks.map((task) => {
+                const taskCard = buildTaskCardViewModel(task);
 
-                {viewMode === "board" ? (
-                  <KanbanBoard
-                    onMoveTask={(task, status, beforeTaskId) =>
-                      handleKanbanMove(task, status, beforeTaskId)}
-                    tasks={snapshot.tasks}
-                  />
-                ) : (
-                  <WorkspaceTaskList
-                    canMutate={canMutate}
-                    clientId={clientId}
-                    commentDrafts={commentDrafts}
-                    commentEdits={commentEdits}
-                    commentsByTask={commentsByTask}
-                    editingCommentId={editingCommentId}
-                    hasMoreTasks={sync.hasMoreTasks}
-                    isLoadingMoreTasks={sync.isLoadingMoreTasks}
-                    normalizedDisplayName={normalizedDisplayName}
-                    onCommentDelete={(comment) => {
-                      void handleCommentDelete(comment);
-                    }}
-                    onCommentDraftChange={(taskId, value) =>
-                      setCommentDrafts((current) => ({
-                        ...current,
-                        [taskId]: value,
-                      }))}
-                    onCommentEditCancel={clearCommentEdit}
-                    onCommentEditChange={(commentId, value) =>
-                      setCommentEdits((current) => ({
-                        ...current,
-                        [commentId]: value,
-                      }))}
-                    onCommentEditStart={startCommentEdit}
-                    onCommentInputBlur={() => {
-                      void sync.updateCursor(null);
-                    }}
-                    onCommentInputFocus={(task) => {
-                      void sync.updateCursor(
-                        createPresenceCursor({
-                          kind: "comment",
-                          taskId: task.id,
-                          taskTitle: task.title,
-                        }),
-                      );
-                    }}
-                    onCommentSubmit={(taskId) => {
-                      void handleCommentSubmit(taskId);
-                    }}
-                    onCommentUpdate={(comment) => {
-                      void handleCommentUpdate(comment);
-                    }}
-                    onLoadMore={() => sync.loadMoreTasks()}
-                    onDescriptionBlur={() => {
-                      void sync.updateCursor(null);
-                    }}
-                    onDescriptionFocus={(task) => {
-                      void sync.updateCursor(
-                        createPresenceCursor({
-                          kind: "description",
-                          taskId: task.id,
-                          taskTitle: task.title,
-                        }),
-                      );
-                    }}
-                    onTaskDelete={(task) => {
-                      void handleTaskDelete(task);
-                    }}
-                    onTaskDescriptionPersist={(task, value) =>
-                      handleTaskDescriptionPersist(task, value)}
-                    onTaskStatusAdvance={(task) => {
-                      void handleStatusAdvance(task);
-                    }}
-                    projectId={projectId}
-                    shouldVirtualize={shouldVirtualizeTaskList}
-                    tasks={snapshot.tasks}
-                    tasksById={tasksById}
-                    viewers={sync.viewers}
-                  />
-                )}
-              </>
+                return (
+                  <article className="task-card" key={task.id}>
+                    <div className="task-card-header">
+                      <div className="task-card-copy">
+                        <h2>{task.title}</h2>
+                        <p className="subtle-copy">Task {task.id.slice(0, 8)}</p>
+                        {taskCard.description ? (
+                          <p className="task-description">{taskCard.description}</p>
+                        ) : null}
+                        {task.dependencies.length > 0 ? (
+                          <p className="dependency-copy">
+                            Blocked by:{" "}
+                            {task.dependencies
+                              .map((dependencyId) => tasksById.get(dependencyId)?.title ?? dependencyId)
+                              .join(", ")}
+                          </p>
+                        ) : null}
+                      </div>
+
+                      <button
+                        className="status-button"
+                        disabled={!canMutate}
+                        onClick={() => {
+                          void handleStatusAdvance(task);
+                        }}
+                        type="button"
+                      >
+                        {formatTaskStatusLabel(task.status)}
+                      </button>
+                    </div>
+
+                    {taskCard.priorityLabel || taskCard.assigneeSummary || taskCard.tagSummary.length > 0 ? (
+                      <div className="task-meta">
+                        {taskCard.priorityLabel ? (
+                          <span className="task-meta-pill">
+                            Priority: {taskCard.priorityLabel}
+                          </span>
+                        ) : null}
+                        {taskCard.assigneeSummary ? (
+                          <span className="task-meta-pill">
+                            Owners: {taskCard.assigneeSummary}
+                          </span>
+                        ) : null}
+                        {taskCard.tagSummary.map((tag) => (
+                          <span className="task-meta-pill task-tag-pill" key={`${task.id}-${tag}`}>
+                            #{tag}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <div className="comment-list">
+                      {(commentsByTask.get(task.id) ?? []).map((comment: Comment) => (
+                        <div className="comment-item" key={comment.id}>
+                          <strong>{comment.author}</strong>
+                          <p>{comment.content}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="comment-composer">
+                      <input
+                        className="text-input"
+                        disabled={!canMutate}
+                        onChange={(event) =>
+                          setCommentDrafts((current) => ({
+                            ...current,
+                            [task.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="Add a comment with @mentions"
+                        value={commentDrafts[task.id] ?? ""}
+                      />
+
+                      <button
+                        className="secondary-button"
+                        disabled={!canMutate}
+                        onClick={() => {
+                          void handleCommentSubmit(task.id);
+                        }}
+                        type="button"
+                      >
+                        Comment
+                      </button>
+                    </div>
+                  </article>
+                );
+              })
             )}
           </section>
         </div>
 
-        <div className="workspace-side-column">
-          <WorkspaceNotifications notifications={sync.notifications} />
-          <WorkspaceActivityFeed activity={sync.activity} />
-        </div>
+        <aside className="panel activity-panel">
+          <div className="activity-header">
+            <p className="eyebrow">Live Feed</p>
+            <h2>Activity</h2>
+            <p className="subtle-copy">
+              This sidebar is another projection over the same project stream.
+            </p>
+          </div>
+
+          <div className="activity-list">
+            {sync.activity.length > 0 ? (
+              sync.activity.map((item) => (
+                <div className="activity-item" key={item.id}>
+                  <strong>{item.actor}</strong>
+                  <p>{item.summary}</p>
+                </div>
+              ))
+            ) : (
+              <p className="subtle-copy">No events yet. Create a task to start the feed.</p>
+            )}
+          </div>
+        </aside>
       </div>
 
-      <WorkspaceShortcuts
-        onClose={() => setShowShortcuts(false)}
-        open={showShortcuts}
-      />
+      {showShortcuts ? (
+        <div
+          aria-label="Keyboard shortcuts"
+          className="shortcut-overlay"
+          onClick={() => setShowShortcuts(false)}
+          role="presentation"
+        >
+          <section
+            className="shortcut-card"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <p className="eyebrow">Keyboard shortcuts</p>
+            <h2>Keyboard shortcuts</h2>
+            <div className="shortcut-list">
+              <p>
+                <strong>Ctrl+Z / Cmd+Z</strong>
+                <span>Undo the latest local event</span>
+              </p>
+              <p>
+                <strong>Ctrl+Shift+Z / Cmd+Shift+Z</strong>
+                <span>Redo the last undone event</span>
+              </p>
+              <p>
+                <strong>N</strong>
+                <span>Focus the new-task input</span>
+              </p>
+              <p>
+                <strong>Escape</strong>
+                <span>Close this overlay</span>
+              </p>
+            </div>
+
+            <button
+              className="secondary-button"
+              onClick={() => setShowShortcuts(false)}
+              type="button"
+            >
+              Close
+            </button>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

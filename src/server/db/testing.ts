@@ -38,7 +38,6 @@ export async function resetDatabase(): Promise<void> {
 
   try {
     await client.query("DROP TABLE IF EXISTS schema_migrations CASCADE");
-    await client.query("DROP TABLE IF EXISTS notifications CASCADE");
     await client.query("DROP TABLE IF EXISTS comments CASCADE");
     await client.query("DROP TABLE IF EXISTS tasks CASCADE");
     await client.query("DROP TABLE IF EXISTS events CASCADE");

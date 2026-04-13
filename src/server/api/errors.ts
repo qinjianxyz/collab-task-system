@@ -5,7 +5,6 @@ import {
   ConcurrencyConflictError,
   DomainError,
 } from "../domain/errors";
-import { RateLimitError } from "../realtime/rate-limiter";
 
 export class BadRequestError extends Error {
   constructor(message: string) {
@@ -18,7 +17,6 @@ export function jsonError(
   status: number,
   code: string,
   message: string,
-  headers?: HeadersInit,
 ): NextResponse {
   return NextResponse.json(
     {
@@ -27,7 +25,7 @@ export function jsonError(
         message,
       },
     },
-    { status, headers },
+    { status },
   );
 }
 
@@ -42,17 +40,6 @@ export function handleRouteError(error: unknown): NextResponse {
 
   if (error instanceof ConcurrencyConflictError) {
     return jsonError(409, "concurrency_conflict", error.message);
-  }
-
-  if (error instanceof RateLimitError) {
-    return jsonError(
-      429,
-      "rate_limited",
-      error.message,
-      {
-        "retry-after": String(Math.ceil(error.retryAfterMs / 1_000)),
-      },
-    );
   }
 
   if (error instanceof ZodError) {
